@@ -7,8 +7,14 @@ import {
   stopNodesPolling,
   startDebugPolling,
   stopDebugPolling,
+  startMissionControlPolling,
+  stopMissionControlPolling,
 } from "./app-polling.ts";
 import { observeTopbar, scheduleChatScroll, scheduleLogsScroll } from "./app-scroll.ts";
+  startMissionControlPolling,
+  stopMissionControlPolling,
+} from "./app-polling";
+import { observeTopbar, scheduleChatScroll, scheduleLogsScroll } from "./app-scroll";
 import {
   applySettingsFromUrl,
   attachThemeListener,
@@ -49,6 +55,9 @@ export function handleConnected(host: LifecycleHost) {
   if (host.tab === "debug") {
     startDebugPolling(host as unknown as Parameters<typeof startDebugPolling>[0]);
   }
+  if (host.tab === "mission-control") {
+    startMissionControlPolling(host as unknown as Parameters<typeof startMissionControlPolling>[0]);
+  }
 }
 
 export function handleFirstUpdated(host: LifecycleHost) {
@@ -60,6 +69,7 @@ export function handleDisconnected(host: LifecycleHost) {
   stopNodesPolling(host as unknown as Parameters<typeof stopNodesPolling>[0]);
   stopLogsPolling(host as unknown as Parameters<typeof stopLogsPolling>[0]);
   stopDebugPolling(host as unknown as Parameters<typeof stopDebugPolling>[0]);
+  stopMissionControlPolling(host as unknown as Parameters<typeof stopMissionControlPolling>[0]);
   detachThemeListener(host as unknown as Parameters<typeof detachThemeListener>[0]);
   host.topbarObserver?.disconnect();
   host.topbarObserver = null;
@@ -69,6 +79,26 @@ export function handleUpdated(host: LifecycleHost, changed: Map<PropertyKey, unk
   if (host.tab === "chat" && host.chatManualRefreshInFlight) {
     return;
   }
+  if (changed.has("tab")) {
+    // Stop all controlled polling first
+    stopLogsPolling(host as unknown as Parameters<typeof stopLogsPolling>[0]);
+    stopDebugPolling(host as unknown as Parameters<typeof stopDebugPolling>[0]);
+    stopMissionControlPolling(host as unknown as Parameters<typeof stopMissionControlPolling>[0]);
+
+    // Start polling for the new tab
+    if (host.tab === "logs") {
+      startLogsPolling(host as unknown as Parameters<typeof startLogsPolling>[0]);
+    }
+    if (host.tab === "debug") {
+      startDebugPolling(host as unknown as Parameters<typeof startDebugPolling>[0]);
+    }
+    if (host.tab === "mission-control") {
+      startMissionControlPolling(
+        host as unknown as Parameters<typeof startMissionControlPolling>[0],
+      );
+    }
+  }
+
   if (
     host.tab === "chat" &&
     (changed.has("chatMessages") ||

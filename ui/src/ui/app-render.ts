@@ -72,6 +72,7 @@ import { renderExecApprovalPrompt } from "./views/exec-approval.ts";
 import { renderGatewayUrlConfirmation } from "./views/gateway-url-confirmation.ts";
 import { renderInstances } from "./views/instances.ts";
 import { renderLogs } from "./views/logs.ts";
+import { renderMissionControl } from "./views/mission-control.ts";
 import { renderNodes } from "./views/nodes.ts";
 import { renderOverview } from "./views/overview.ts";
 import { renderSessions } from "./views/sessions.ts";
@@ -1211,6 +1212,28 @@ export function renderApp(state: AppViewState) {
                 onRefresh: () => loadLogs(state, { reset: true }),
                 onExport: (lines, label) => state.exportLogs(lines, label),
                 onScroll: (event) => state.handleLogsScroll(event),
+              })
+            : nothing
+        }
+
+        ${
+          state.tab === "mission-control"
+            ? renderMissionControl({
+                tasksLoading: state.missionTasksLoading,
+                tasks: state.missionTasks,
+                tasksError: state.missionTasksError,
+                agentsLoading: state.missionAgentsLoading,
+                agents: state.missionAgents,
+                agentsError: state.missionAgentsError,
+                activityLoading: state.missionActivityLoading,
+                activity: state.missionActivity,
+                activityError: state.missionActivityError,
+                selectedTask: state.missionSelectedTask,
+                filter: state.missionFilter,
+                lastPoll: state.missionLastPoll,
+                onRefresh: () => state.loadMissionControl(),
+                onFilterChange: (filter) => state.handleMissionFilterChange(filter),
+                onTaskSelect: (taskId) => state.handleMissionTaskSelect(taskId),
               })
             : nothing
         }

@@ -7,6 +7,7 @@ type PollingHost = {
   nodesPollInterval: number | null;
   logsPollInterval: number | null;
   debugPollInterval: number | null;
+  missionControlPollInterval: number | null;
   tab: string;
 };
 
@@ -66,4 +67,26 @@ export function stopDebugPolling(host: PollingHost) {
   }
   clearInterval(host.debugPollInterval);
   host.debugPollInterval = null;
+}
+
+export function startMissionControlPolling(host: PollingHost) {
+  if (host.missionControlPollInterval != null) {
+    return;
+  }
+  // Initial load immediately
+  void (host as unknown as OpenClawApp).loadMissionControl();
+  host.missionControlPollInterval = window.setInterval(() => {
+    if (host.tab !== "mission-control") {
+      return;
+    }
+    void (host as unknown as OpenClawApp).loadMissionControl();
+  }, 10000);
+}
+
+export function stopMissionControlPolling(host: PollingHost) {
+  if (host.missionControlPollInterval == null) {
+    return;
+  }
+  clearInterval(host.missionControlPollInterval);
+  host.missionControlPollInterval = null;
 }

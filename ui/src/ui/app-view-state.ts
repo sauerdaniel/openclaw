@@ -31,6 +31,7 @@ import type {
   SkillStatusReport,
   StatusSummary,
 } from "./types.ts";
+import type { AgentStatus, Activity, Task, MissionStatus } from "./types/mission-control.ts";
 import type { ChatAttachment, ChatQueueItem, CronFormState } from "./ui-types.ts";
 import type { NostrProfileFormState } from "./views/channels.nostr-profile-form.ts";
 import type { SessionLogEntry } from "./views/usage.ts";
@@ -214,11 +215,23 @@ export type AppViewState = {
   logsLevelFilters: Record<LogLevel, boolean>;
   logsAutoFollow: boolean;
   logsTruncated: boolean;
-  logsCursor: number | null;
+logsCursor: number | null;
   logsLastFetchAt: number | null;
   logsLimit: number;
   logsMaxBytes: number;
   logsAtBottom: boolean;
+missionTasksLoading: boolean;
+  missionTasks: Task[];
+  missionTasksError: string | null;
+  missionAgentsLoading: boolean;
+  missionAgents: AgentStatus[];
+  missionAgentsError: string | null;
+  missionActivityLoading: boolean;
+  missionActivity: Activity[];
+  missionActivityError: string | null;
+  missionSelectedTask: string | undefined;
+  missionFilter: MissionStatus | "all";
+  missionLastPoll: number;
   client: GatewayBrowserClient | null;
   refreshSessionsAfterChat: Set<string>;
   connect: () => void;
@@ -271,7 +284,7 @@ export type AppViewState = {
   setPassword: (next: string) => void;
   setSessionKey: (next: string) => void;
   setChatMessage: (next: string) => void;
-  handleSendChat: (messageOverride?: string, opts?: { restoreDraft?: boolean }) => Promise<void>;
+handleSendChat: (messageOverride?: string, opts?: { restoreDraft?: boolean }) => Promise<void>;
   handleAbortChat: () => Promise<void>;
   removeQueuedMessage: (id: string) => void;
   handleChatScroll: (event: Event) => void;
@@ -282,4 +295,16 @@ export type AppViewState = {
   handleOpenSidebar: (content: string) => void;
   handleCloseSidebar: () => void;
   handleSplitRatioChange: (ratio: number) => void;
+handleChatSend: () => Promise<void>;
+  handleChatAbort: () => Promise<void>;
+  handleChatSelectQueueItem: (id: string) => void;
+  handleChatDropQueueItem: (id: string) => void;
+  handleChatClearQueue: () => void;
+  handleLogsFilterChange: (next: string) => void;
+  handleLogsLevelFilterToggle: (level: LogLevel) => void;
+  handleLogsAutoFollowToggle: (next: boolean) => void;
+  handleCallDebugMethod: (method: string, params: string) => Promise<void>;
+  loadMissionControl: () => Promise<void>;
+  handleMissionFilterChange: (filter: MissionStatus | "all") => void;
+  handleMissionTaskSelect: (taskId: string | undefined) => void;
 };
