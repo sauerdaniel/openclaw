@@ -324,6 +324,19 @@ export class OpenClawApp extends LitElement {
   @state() logsMaxBytes = 250_000;
   @state() logsAtBottom = true;
 
+  @state() missionTasksLoading = false;
+  @state() missionTasks: any[] = [];
+  @state() missionTasksError: string | null = null;
+  @state() missionAgentsLoading = false;
+  @state() missionAgents: any[] = [];
+  @state() missionAgentsError: string | null = null;
+  @state() missionActivityLoading = false;
+  @state() missionActivity: any[] = [];
+  @state() missionActivityError: string | null = null;
+  @state() missionSelectedTask: string | undefined = undefined;
+  @state() missionFilter: any = "all";
+  @state() missionLastPoll = 0;
+
   client: GatewayBrowserClient | null = null;
   private chatScrollFrame: number | null = null;
   private chatScrollTimeout: number | null = null;
@@ -333,6 +346,7 @@ export class OpenClawApp extends LitElement {
   private nodesPollInterval: number | null = null;
   private logsPollInterval: number | null = null;
   private debugPollInterval: number | null = null;
+  private missionControlPollInterval: number | null = null;
   private logsScrollFrame: number | null = null;
   private toolStreamById = new Map<string, ToolStreamEntry>();
   private toolStreamOrder: string[] = [];
@@ -427,6 +441,84 @@ export class OpenClawApp extends LitElement {
 
   async loadCron() {
     await loadCronInternal(this as unknown as Parameters<typeof loadCronInternal>[0]);
+  }
+
+  async loadMissionControl() {
+    if (!this.client || !this.connected) {
+      return;
+    }
+    // Cache path for mission control data - uses env var or defaults to ~/.openclaw
+    const CACHE_BASE =
+      process.env.OPENCLAW_MISSION_CACHE ||
+      `${process.env.HOME || "~"}/.openclaw/workspace/mission/cache`;
+
+    // Load tasks
+    this.missionTasksLoading = true;
+    this.missionTasksError = null;
+    try {
+      const res = await this.client.request("exec.exec", {
+        command: ["cat", `${CACHE_BASE}/tasks.json`],
+      });
+      if (res.stdout) {
+        this.missionTasks = JSON.parse(res.stdout);
+      }
+    } catch (err) {
+      this.missionTasksError = String(err);
+    } finally {
+      this.missionTasksLoading = false;
+    }
+
+    // Load agents
+    this.missionAgentsLoading = true;
+    this.missionAgentsError = null;
+    try {
+      const res = await this.client.request("exec.exec", {
+        command: ["cat", `${CACHE_BASE}/agents.json`],
+      });
+      if (res.stdout) {
+        this.missionAgents = JSON.parse(res.stdout);
+      }
+    } catch (err) {
+      this.missionAgentsError = String(err);
+    } finally {
+      this.missionAgentsLoading = false;
+    }
+
+    // Load activity
+    this.missionActivityLoading = true;
+    this.missionActivityError = null;
+    try {
+      const res = await this.client.request("exec.exec", {
+        command: ["tail", "-n", "50", `${CACHE_BASE}/activity.jsonl`],
+      });
+      if (res.stdout) {
+        const lines = res.stdout.trim().split("\n").filter(Boolean);
+        this.missionActivity = lines
+          .map((line: string) => {
+            try {
+              return JSON.parse(line);
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean)
+          .toReversed();
+      }
+    } catch (err) {
+      this.missionActivityError = String(err);
+    } finally {
+      this.missionActivityLoading = false;
+    }
+
+    this.missionLastPoll = Date.now();
+  }
+
+  handleMissionFilterChange(filter: any) {
+    this.missionFilter = filter;
+  }
+
+  handleMissionTaskSelect(taskId: string | undefined) {
+    this.missionSelectedTask = taskId;
   }
 
   async handleAbortChat() {
