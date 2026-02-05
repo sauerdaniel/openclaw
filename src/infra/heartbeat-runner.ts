@@ -3,7 +3,7 @@ import path from "node:path";
 import type { ReplyPayload } from "../auto-reply/types.js";
 import type { ChannelHeartbeatDeps } from "../channels/plugins/types.js";
 import type { OpenClawConfig } from "../config/config.js";
-import type { AgentDefaultsConfig } from "../config/types.agent-defaults.js";
+import type { AgentDefaultsConfig, AgentModelListConfig } from "../config/types.agent-defaults.js";
 import type { OutboundSendDeps } from "./outbound/deliver.js";
 import {
   resolveAgentConfig,
@@ -88,7 +88,7 @@ export type HeartbeatSummary = {
   everyMs: number | null;
   prompt: string;
   target: string;
-  model?: string;
+  model?: string | AgentModelListConfig;
   ackMaxChars: number;
 };
 
