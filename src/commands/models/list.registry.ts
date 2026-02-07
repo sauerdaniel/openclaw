@@ -98,11 +98,21 @@ export function toModelRow(params: {
     }
   }
 
+  let contextWindow = model.contextWindow ?? null;
+  // OpenAI docs: GPT-5.x Codex models support 400k context.
+  // pi-coding-agent's built-in model catalog can lag; prefer the documented value in listings.
+  if (model.provider === "openai-codex") {
+    const id = String(model.id ?? "").toLowerCase();
+    if (id.startsWith("gpt-5")) {
+      contextWindow = 400000;
+    }
+  }
+
   return {
     key,
     name: model.name || model.id,
     input,
-    contextWindow: model.contextWindow ?? null,
+    contextWindow,
     local,
     available,
     tags: Array.from(mergedTags),

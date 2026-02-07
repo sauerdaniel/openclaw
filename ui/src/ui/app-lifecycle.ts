@@ -11,10 +11,6 @@ import {
   stopMissionControlPolling,
 } from "./app-polling.ts";
 import { observeTopbar, scheduleChatScroll, scheduleLogsScroll } from "./app-scroll.ts";
-  startMissionControlPolling,
-  stopMissionControlPolling,
-} from "./app-polling";
-import { observeTopbar, scheduleChatScroll, scheduleLogsScroll } from "./app-scroll";
 import {
   applySettingsFromUrl,
   attachThemeListener,
