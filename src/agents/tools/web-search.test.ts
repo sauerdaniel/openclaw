@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { __testing } from "./web-search.js";
 
-const { inferPerplexityBaseUrlFromApiKey, resolvePerplexityBaseUrl, normalizeFreshness } =
-  __testing;
+const {
+  inferPerplexityBaseUrlFromApiKey,
+  resolvePerplexityBaseUrl,
+  normalizeFreshness,
+  parseRetryAfter,
+  isRetryableError,
+} = __testing;
 
 describe("web_search perplexity baseUrl defaults", () => {
   it("detects a Perplexity key prefix", () => {
@@ -66,5 +71,43 @@ describe("web_search freshness normalization", () => {
     expect(normalizeFreshness("2024-13-01to2024-01-31")).toBeUndefined();
     expect(normalizeFreshness("2024-02-30to2024-03-01")).toBeUndefined();
     expect(normalizeFreshness("2024-03-10to2024-03-01")).toBeUndefined();
+  });
+});
+
+describe("web_search retry logic", () => {
+  it("identifies retryable 429 errors", () => {
+    const err = new Error("Brave Search API error (429): Rate limit exceeded");
+    expect(isRetryableError(err)).toBe(true);
+  });
+
+  it("does not retry non-429 errors", () => {
+    const err = new Error("Brave Search API error (500): Internal server error");
+    expect(isRetryableError(err)).toBe(false);
+  });
+
+  it("parses Retry-After header in seconds", () => {
+    const headers = new Headers();
+    headers.set("retry-after", "30");
+    expect(parseRetryAfter(headers)).toBe(30000);
+  });
+
+  it("parses Retry-After header as HTTP date", () => {
+    const futureDate = new Date(Date.now() + 60000);
+    const headers = new Headers();
+    headers.set("retry-after", futureDate.toUTCString());
+    const result = parseRetryAfter(headers);
+    expect(result).toBeGreaterThan(50000);
+    expect(result).toBeLessThan(70000);
+  });
+
+  it("returns undefined for missing Retry-After header", () => {
+    const headers = new Headers();
+    expect(parseRetryAfter(headers)).toBeUndefined();
+  });
+
+  it("returns undefined for invalid Retry-After values", () => {
+    const headers = new Headers();
+    headers.set("retry-after", "invalid");
+    expect(parseRetryAfter(headers)).toBeUndefined();
   });
 });
