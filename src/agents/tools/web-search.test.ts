@@ -10,6 +10,8 @@ const {
   resolveGrokApiKey,
   resolveGrokModel,
   resolveGrokInlineCitations,
+  parseRetryAfter,
+  isRetryableError,
 } = __testing;
 
 describe("web_search perplexity baseUrl defaults", () => {
@@ -140,5 +142,43 @@ describe("web_search grok config resolution", () => {
   it("respects inlineCitations config", () => {
     expect(resolveGrokInlineCitations({ inlineCitations: true })).toBe(true);
     expect(resolveGrokInlineCitations({ inlineCitations: false })).toBe(false);
+  });
+});
+
+describe("web_search retry logic", () => {
+  it("identifies retryable 429 errors", () => {
+    const err = new Error("Brave Search API error (429): Rate limit exceeded");
+    expect(isRetryableError(err)).toBe(true);
+  });
+
+  it("does not retry non-429 errors", () => {
+    const err = new Error("Brave Search API error (500): Internal server error");
+    expect(isRetryableError(err)).toBe(false);
+  });
+
+  it("parses Retry-After header in seconds", () => {
+    const headers = new Headers();
+    headers.set("retry-after", "30");
+    expect(parseRetryAfter(headers)).toBe(30000);
+  });
+
+  it("parses Retry-After header as HTTP date", () => {
+    const futureDate = new Date(Date.now() + 60000);
+    const headers = new Headers();
+    headers.set("retry-after", futureDate.toUTCString());
+    const result = parseRetryAfter(headers);
+    expect(result).toBeGreaterThan(50000);
+    expect(result).toBeLessThan(70000);
+  });
+
+  it("returns undefined for missing Retry-After header", () => {
+    const headers = new Headers();
+    expect(parseRetryAfter(headers)).toBeUndefined();
+  });
+
+  it("returns undefined for invalid Retry-After values", () => {
+    const headers = new Headers();
+    headers.set("retry-after", "invalid");
+    expect(parseRetryAfter(headers)).toBeUndefined();
   });
 });

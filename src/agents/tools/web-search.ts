@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { AnyAgentTool } from "./common.js";
 import { formatCliCommand } from "../../cli/command-format.js";
+import { retryAsync } from "../../infra/retry.js";
 import { wrapWebContent } from "../../security/external-content.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import { jsonResult, readNumberParam, readStringParam } from "./common.js";
@@ -35,6 +36,78 @@ const DEFAULT_GROK_MODEL = "grok-4-1-fast";
 const SEARCH_CACHE = new Map<string, CacheEntry<Record<string, unknown>>>();
 const BRAVE_FRESHNESS_SHORTCUTS = new Set(["pd", "pw", "pm", "py"]);
 const BRAVE_FRESHNESS_RANGE = /^(\d{4}-\d{2}-\d{2})to(\d{4}-\d{2}-\d{2})$/;
+
+// Rate limiting configuration
+const MAX_REQUESTS_PER_MINUTE = 30; // Conservative limit for both Brave and Perplexity
+const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+const REQUEST_TIMESTAMPS: number[] = [];
+
+// Retry configuration for 429 errors
+const RETRY_ATTEMPTS = 4; // Initial attempt + 3 retries
+const RETRY_MIN_DELAY_MS = 1000; // Start with 1 second
+const RETRY_MAX_DELAY_MS = 32000; // Cap at 32 seconds
+const RETRY_JITTER = 0.25; // 25% jitter to avoid thundering herd
+
+/**
+ * Rate limiter: tracks requests in a sliding window and throws if limit exceeded.
+ */
+function checkRateLimit(): void {
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+
+  // Remove timestamps outside the window
+  while (REQUEST_TIMESTAMPS.length > 0 && REQUEST_TIMESTAMPS[0]! < windowStart) {
+    REQUEST_TIMESTAMPS.shift();
+  }
+
+  // Check if we're at the limit
+  if (REQUEST_TIMESTAMPS.length >= MAX_REQUESTS_PER_MINUTE) {
+    const oldestRequest = REQUEST_TIMESTAMPS[0]!;
+    const waitMs = Math.ceil(oldestRequest + RATE_LIMIT_WINDOW_MS - now);
+    throw new Error(
+      `Rate limit exceeded: ${MAX_REQUESTS_PER_MINUTE} requests per minute. ` +
+        `Wait ${Math.ceil(waitMs / 1000)}s before retrying.`,
+    );
+  }
+
+  // Record this request
+  REQUEST_TIMESTAMPS.push(now);
+}
+
+/**
+ * Extract Retry-After header value in milliseconds.
+ */
+function parseRetryAfter(headers: Headers): number | undefined {
+  const retryAfter = headers.get("retry-after");
+  if (!retryAfter) {
+    return undefined;
+  }
+
+  // Try parsing as seconds (numeric)
+  const seconds = Number.parseInt(retryAfter, 10);
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return seconds * 1000;
+  }
+
+  // Try parsing as HTTP date
+  try {
+    const date = new Date(retryAfter);
+    const delayMs = date.getTime() - Date.now();
+    return delayMs > 0 ? delayMs : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Determine if an error is retryable (e.g., 429 rate limit).
+ */
+function isRetryableError(err: unknown): boolean {
+  if (err instanceof Error && err.message.includes("(429)")) {
+    return true;
+  }
+  return false;
+}
 
 const WebSearchSchema = Type.Object({
   query: Type.String({ description: "Search query string." }),
@@ -402,32 +475,65 @@ async function runPerplexitySearch(params: {
   const endpoint = `${baseUrl}/chat/completions`;
   const model = resolvePerplexityRequestModel(baseUrl, params.model);
 
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${params.apiKey}`,
-      "HTTP-Referer": "https://openclaw.ai",
-      "X-Title": "OpenClaw Web Search",
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: "user",
-          content: params.query,
+  // Check rate limit before making request
+  checkRateLimit();
+
+  // Wrap fetch in retry logic with exponential backoff
+  const result = await retryAsync(
+    async () => {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${params.apiKey}`,
+          "HTTP-Referer": "https://openclaw.ai",
+          "X-Title": "OpenClaw Web Search",
         },
-      ],
-    }),
-    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
-  });
+        body: JSON.stringify({
+          model: params.model,
+          messages: [
+            {
+              role: "user",
+              content: params.query,
+            },
+          ],
+        }),
+        signal: withTimeout(undefined, params.timeoutSeconds * 1000),
+      });
 
-  if (!res.ok) {
-    const detail = await readResponseText(res);
-    throw new Error(`Perplexity API error (${res.status}): ${detail || res.statusText}`);
-  }
+      if (!res.ok) {
+        const detail = await readResponseText(res);
+        const error = new Error(
+          `Perplexity API error (${res.status}): ${detail || res.statusText}`,
+        );
+        // Attach response for retry logic
+        (error as any).response = res;
+        throw error;
+      }
 
-  const data = (await res.json()) as PerplexitySearchResponse;
+      return res;
+    },
+    {
+      attempts: RETRY_ATTEMPTS,
+      minDelayMs: RETRY_MIN_DELAY_MS,
+      maxDelayMs: RETRY_MAX_DELAY_MS,
+      jitter: RETRY_JITTER,
+      shouldRetry: (err) => isRetryableError(err),
+      retryAfterMs: (err) => {
+        if (err instanceof Error && (err as any).response instanceof Response) {
+          return parseRetryAfter((err as any).response.headers);
+        }
+        return undefined;
+      },
+      onRetry: (info) => {
+        console.warn(
+          `[web_search] Perplexity API rate limited, retrying (${info.attempt}/${info.maxAttempts}) after ${info.delayMs}ms`,
+        );
+      },
+    },
+  );
+
+  const data = (await result.json()) as PerplexitySearchResponse;
   const content = data.choices?.[0]?.message?.content ?? "No response";
   const citations = data.citations ?? [];
 
@@ -576,19 +682,52 @@ async function runWebSearch(params: {
     url.searchParams.set("freshness", params.freshness);
   }
 
-  const res = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "X-Subscription-Token": params.apiKey,
-    },
-    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
-  });
+  // Check rate limit before making request
+  checkRateLimit();
 
-  if (!res.ok) {
-    const detail = await readResponseText(res);
-    throw new Error(`Brave Search API error (${res.status}): ${detail || res.statusText}`);
-  }
+  // Wrap fetch in retry logic with exponential backoff
+  const res = await retryAsync(
+    async () => {
+      const response = await fetch(url.toString(), {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "X-Subscription-Token": params.apiKey,
+        },
+        signal: withTimeout(undefined, params.timeoutSeconds * 1000),
+      });
+
+      if (!response.ok) {
+        const detail = await readResponseText(response);
+        const error = new Error(
+          `Brave Search API error (${response.status}): ${detail || response.statusText}`,
+        );
+        // Attach response for retry logic
+        (error as any).response = response;
+        throw error;
+      }
+
+      return response;
+    },
+    {
+      attempts: RETRY_ATTEMPTS,
+      minDelayMs: RETRY_MIN_DELAY_MS,
+      maxDelayMs: RETRY_MAX_DELAY_MS,
+      jitter: RETRY_JITTER,
+      shouldRetry: (err) => isRetryableError(err),
+      retryAfterMs: (err) => {
+        if (err instanceof Error && (err as any).response instanceof Response) {
+          return parseRetryAfter((err as any).response.headers);
+        }
+        return undefined;
+      },
+      onRetry: (info) => {
+        console.warn(
+          `[web_search] Brave Search API rate limited, retrying (${info.attempt}/${info.maxAttempts}) after ${info.delayMs}ms`,
+        );
+      },
+    },
+  );
 
   const data = (await res.json()) as BraveSearchResponse;
   const results = Array.isArray(data.web?.results) ? (data.web?.results ?? []) : [];
@@ -713,4 +852,6 @@ export const __testing = {
   resolveGrokApiKey,
   resolveGrokModel,
   resolveGrokInlineCitations,
+  parseRetryAfter,
+  isRetryableError,
 } as const;
