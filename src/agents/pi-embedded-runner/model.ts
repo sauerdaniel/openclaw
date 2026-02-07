@@ -21,7 +21,30 @@ type InlineProviderConfig = {
 
 const OPENAI_CODEX_GPT_53_MODEL_ID = "gpt-5.3-codex";
 
+// OpenAI docs: GPT-5.x Codex models support 400k context.
+// (pi-coding-agent's built-in catalog has historically lagged; we override here for correctness.)
+const OPENAI_CODEX_GPT5_CONTEXT_WINDOW = 400_000;
+const OPENAI_CODEX_GPT5_MAX_TOKENS = 128_000;
+
 const OPENAI_CODEX_TEMPLATE_MODEL_IDS = ["gpt-5.2-codex"] as const;
+
+function patchOpenAICodexGpt5Model(model: Model<Api>): Model<Api> {
+  const normalizedProvider = normalizeProviderId(model.provider);
+  if (normalizedProvider !== "openai-codex") {
+    return model;
+  }
+  const id = String(model.id ?? "")
+    .trim()
+    .toLowerCase();
+  if (!id.startsWith("gpt-5")) {
+    return model;
+  }
+  return normalizeModelCompat({
+    ...model,
+    contextWindow: OPENAI_CODEX_GPT5_CONTEXT_WINDOW,
+    maxTokens: OPENAI_CODEX_GPT5_MAX_TOKENS,
+  } as Model<Api>);
+}
 
 // pi-ai's built-in Anthropic catalog can lag behind OpenClaw's defaults/docs.
 // Add forward-compat fallbacks for known-new IDs by cloning an older template model.
@@ -48,25 +71,29 @@ function resolveOpenAICodexGpt53FallbackModel(
     if (!template) {
       continue;
     }
-    return normalizeModelCompat({
-      ...template,
-      id: trimmedModelId,
-      name: trimmedModelId,
-    } as Model<Api>);
+    return patchOpenAICodexGpt5Model(
+      normalizeModelCompat({
+        ...template,
+        id: trimmedModelId,
+        name: trimmedModelId,
+      } as Model<Api>),
+    );
   }
 
-  return normalizeModelCompat({
-    id: trimmedModelId,
-    name: trimmedModelId,
-    api: "openai-codex-responses",
-    provider: normalizedProvider,
-    baseUrl: "https://chatgpt.com/backend-api",
-    reasoning: true,
-    input: ["text", "image"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: DEFAULT_CONTEXT_TOKENS,
-    maxTokens: DEFAULT_CONTEXT_TOKENS,
-  } as Model<Api>);
+  return patchOpenAICodexGpt5Model(
+    normalizeModelCompat({
+      id: trimmedModelId,
+      name: trimmedModelId,
+      api: "openai-codex-responses",
+      provider: normalizedProvider,
+      baseUrl: "https://chatgpt.com/backend-api",
+      reasoning: true,
+      input: ["text", "image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: DEFAULT_CONTEXT_TOKENS,
+      maxTokens: DEFAULT_CONTEXT_TOKENS,
+    } as Model<Api>),
+  );
 }
 
 function resolveAnthropicOpus46ForwardCompatModel(
@@ -221,5 +248,9 @@ export function resolveModel(
       modelRegistry,
     };
   }
-  return { model: normalizeModelCompat(model), authStorage, modelRegistry };
+  return {
+    model: patchOpenAICodexGpt5Model(normalizeModelCompat(model)),
+    authStorage,
+    modelRegistry,
+  };
 }

@@ -130,7 +130,28 @@ export async function ensureOpenClawModelsJson(
     providers: mergedProviders,
     agentDir,
   });
-  const next = `${JSON.stringify({ providers: normalizedProviders }, null, 2)}\n`;
+
+  // pi-coding-agent's ModelRegistry requires a provider-level or model-level `api` when defining
+  // custom models (providers.*.models[]). OpenClaw's config schema intentionally restricts `api`
+  // to a smaller set, so we patch the generated models.json for known providers that need a
+  // more specific API identifier.
+  //
+  // Without this, a configured openai-codex provider with custom models is ignored by pi's
+  // ModelRegistry, which then falls back to the built-in catalog (often stale; e.g. 272k ctx).
+  const patchedProviders = (() => {
+    const providers = normalizedProviders as any;
+    const codex = providers?.["openai-codex"];
+    if (codex && typeof codex === "object" && Array.isArray(codex.models) && codex.models.length) {
+      const providerApi = typeof codex.api === "string" ? codex.api.trim() : "";
+      const modelHasApi = codex.models.some((m: any) => typeof m?.api === "string" && m.api.trim());
+      if (!modelHasApi && (!providerApi || providerApi === "openai-responses")) {
+        codex.api = "openai-codex-responses";
+      }
+    }
+    return providers as typeof normalizedProviders;
+  })();
+
+  const next = `${JSON.stringify({ providers: patchedProviders }, null, 2)}\n`;
   try {
     existingRaw = await fs.readFile(targetPath, "utf8");
   } catch {
