@@ -1,0 +1,33 @@
+diff --git a/src/agents/timeout.ts b/src/agents/timeout.ts
+index abc123..def456 100644
+--- a/src/agents/timeout.ts
++++ b/src/agents/timeout.ts
+@@ -1,5 +1,9 @@
+ import type { OpenClawConfig } from "../config/config.js";
+ 
++// Node.js maximum safe setTimeout value (2^31 - 1 ms ≈ 24.8 days)
++// Using 24 days to stay well under the limit
++const MAX_SAFE_TIMEOUT_MS = 24 * 24 * 60 * 60 * 1000; // 24 days in ms
++
+ const DEFAULT_AGENT_TIMEOUT_SECONDS = 600;
+ 
+ const normalizeNumber = (value: unknown): number | undefined =>
+@@ -12,9 +16,8 @@ export function resolveAgentTimeoutSeconds(cfg?: OpenClawConfig): number {
+ 
+ export function resolveAgentTimeoutMs(opts: {
+   cfg?: OpenClawConfig;
+   overrideMs?: number | null;
+   overrideSeconds?: number | null;
+   minMs?: number;
+ }): number {
+   const minMs = Math.max(normalizeNumber(opts.minMs) ?? 1, 1);
+   const defaultMs = resolveAgentTimeoutSeconds(opts.cfg) * 1000;
+-  // Use a very large timeout value (30 days) to represent "no timeout"
+-  // when explicitly set to 0. This avoids setTimeout issues with Infinity.
+-  const NO_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
++  // Use 24 days (safe under Node.js 2^31-1 limit) to represent "no timeout"
++  const NO_TIMEOUT_MS = MAX_SAFE_TIMEOUT_MS;
+   const overrideMs = normalizeNumber(opts.overrideMs);
+   if (overrideMs !== undefined) {
+     if (overrideMs === 0) {
+       return NO_TIMEOUT_MS;

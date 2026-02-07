@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach } from "vitest";
 import { __testing } from "./web-search.js";
 
 const {
@@ -12,6 +12,8 @@ const {
   resolveGrokInlineCitations,
   parseRetryAfter,
   isRetryableError,
+  checkRateLimit,
+  checkCircuitBreaker,
 } = __testing;
 
 describe("web_search perplexity baseUrl defaults", () => {
@@ -180,5 +182,23 @@ describe("web_search retry logic", () => {
     const headers = new Headers();
     headers.set("retry-after", "invalid");
     expect(parseRetryAfter(headers)).toBeUndefined();
+  });
+});
+
+describe("web_search token bucket rate limiting", () => {
+  it("exports rate limiting and circuit breaker functions", () => {
+    expect(typeof checkRateLimit).toBe("function");
+    expect(typeof checkCircuitBreaker).toBe("function");
+  });
+
+  it("rate limiter is async and returns a number", async () => {
+    const result = await checkRateLimit();
+    expect(typeof result).toBe("number");
+    expect(result).toBeGreaterThanOrEqual(0);
+  });
+
+  it("circuit breaker is async and returns void", async () => {
+    const result = await checkCircuitBreaker();
+    expect(result).toBeUndefined();
   });
 });

@@ -37,41 +37,125 @@ const SEARCH_CACHE = new Map<string, CacheEntry<Record<string, unknown>>>();
 const BRAVE_FRESHNESS_SHORTCUTS = new Set(["pd", "pw", "pm", "py"]);
 const BRAVE_FRESHNESS_RANGE = /^(\d{4}-\d{2}-\d{2})to(\d{4}-\d{2}-\d{2})$/;
 
-// Rate limiting configuration
-const MAX_REQUESTS_PER_MINUTE = 30; // Conservative limit for both Brave and Perplexity
-const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
-const REQUEST_TIMESTAMPS: number[] = [];
+// Rate limiting configuration - Token Bucket Pattern
+// Brave Search free tier: 1 request per second = 60 requests per minute
+// Token bucket allows smooth rate limiting with small bursts
+const REQUESTS_PER_SECOND = 1;
+const TOKEN_REFILL_INTERVAL_MS = 1000; // Refill 1 token every second
+const MAX_TOKENS = 10; // Allow small bursts (up to 10 requests)
 
-// Retry configuration for 429 errors
+// Token bucket state - shared across all concurrent requests
+let availableTokens = MAX_TOKENS;
+let lastRefillTime = Date.now();
+
+// Circuit breaker configuration
+const CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5; // Open circuit after 5 consecutive failures
+const CIRCUIT_BREAKER_TIMEOUT_MS = 60_000; // Wait 60s before attempting recovery
+let circuitBreakerFailures = 0;
+let circuitBreakerOpenUntil = 0; // Timestamp when circuit can attempt recovery
+
+// Retry configuration for 429 errors with exponential backoff
 const RETRY_ATTEMPTS = 4; // Initial attempt + 3 retries
 const RETRY_MIN_DELAY_MS = 1000; // Start with 1 second
 const RETRY_MAX_DELAY_MS = 32000; // Cap at 32 seconds
 const RETRY_JITTER = 0.25; // 25% jitter to avoid thundering herd
 
 /**
- * Rate limiter: tracks requests in a sliding window and throws if limit exceeded.
+ * Token bucket rate limiter: waits until a token is available, then consumes it.
+ * Enforces strict 1 request/second limit for Brave Search API (free tier).
+ * Returns the actual wait time in milliseconds.
  */
-function checkRateLimit(): void {
-  const now = Date.now();
-  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+async function checkRateLimit(): Promise<number> {
+  let waitedMs = 0;
 
-  // Remove timestamps outside the window
-  while (REQUEST_TIMESTAMPS.length > 0 && REQUEST_TIMESTAMPS[0]! < windowStart) {
-    REQUEST_TIMESTAMPS.shift();
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const now = Date.now();
+    const timeSinceLastRefill = now - lastRefillTime;
+
+    // Refill tokens based on elapsed time
+    // We get 1 token per second, up to MAX_TOKENS
+    const tokensToAdd = Math.floor(timeSinceLastRefill / TOKEN_REFILL_INTERVAL_MS);
+    if (tokensToAdd > 0) {
+      availableTokens = Math.min(MAX_TOKENS, availableTokens + tokensToAdd);
+      lastRefillTime = now - (timeSinceLastRefill % TOKEN_REFILL_INTERVAL_MS);
+    }
+
+    // If token available, consume it and return
+    if (availableTokens > 0) {
+      availableTokens -= 1;
+      return waitedMs;
+    }
+
+    // Calculate wait time until next refill
+    const nextRefillMs =
+      TOKEN_REFILL_INTERVAL_MS - (timeSinceLastRefill % TOKEN_REFILL_INTERVAL_MS);
+    // Add small jitter (5%) to avoid thundering herd
+    const jitterMs = Math.random() * (nextRefillMs * 0.05);
+    const sleepMs = nextRefillMs + jitterMs;
+
+    // Sleep and try again
+    await new Promise((resolve) => {
+      setTimeout(resolve, sleepMs);
+    });
+    waitedMs += sleepMs;
+  }
+}
+
+/**
+ * Circuit breaker: prevents cascading failures by backing off after repeated failures.
+ * Waits before allowing requests if circuit is open.
+ */
+async function checkCircuitBreaker(): Promise<void> {
+  if (circuitBreakerOpenUntil === 0) {
+    // Circuit is closed, proceed immediately
+    return;
   }
 
-  // Check if we're at the limit
-  if (REQUEST_TIMESTAMPS.length >= MAX_REQUESTS_PER_MINUTE) {
-    const oldestRequest = REQUEST_TIMESTAMPS[0]!;
-    const waitMs = Math.ceil(oldestRequest + RATE_LIMIT_WINDOW_MS - now);
-    throw new Error(
-      `Rate limit exceeded: ${MAX_REQUESTS_PER_MINUTE} requests per minute. ` +
-        `Wait ${Math.ceil(waitMs / 1000)}s before retrying.`,
+  const now = Date.now();
+
+  // If circuit is open, wait until it can attempt recovery
+  if (circuitBreakerOpenUntil > now) {
+    const waitMs = circuitBreakerOpenUntil - now;
+    console.warn(
+      `[web_search] Circuit breaker open: Waiting ${Math.ceil(waitMs / 1000)}s before recovery attempt after ${circuitBreakerFailures} failures.`,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, waitMs);
+    });
+  }
+
+  // Circuit can now attempt recovery (half-open state)
+}
+
+/**
+ * Record a circuit breaker failure and open circuit if threshold exceeded.
+ */
+function recordCircuitBreakerFailure(): void {
+  circuitBreakerFailures += 1;
+
+  if (circuitBreakerFailures >= CIRCUIT_BREAKER_FAILURE_THRESHOLD) {
+    const now = Date.now();
+    circuitBreakerOpenUntil = now + CIRCUIT_BREAKER_TIMEOUT_MS;
+    console.warn(
+      `[web_search] Circuit breaker opened after ${circuitBreakerFailures} consecutive failures. Will recover after ${CIRCUIT_BREAKER_TIMEOUT_MS / 1000}s.`,
+    );
+  }
+}
+
+/**
+ * Record a circuit breaker success and reset failure counter.
+ */
+function recordCircuitBreakerSuccess(): void {
+  const wasOpen = circuitBreakerOpenUntil > 0;
+  if (wasOpen) {
+    console.warn(
+      `[web_search] Circuit breaker recovered after ${circuitBreakerFailures} failures.`,
     );
   }
 
-  // Record this request
-  REQUEST_TIMESTAMPS.push(now);
+  circuitBreakerFailures = 0;
+  circuitBreakerOpenUntil = 0;
 }
 
 /**
@@ -475,69 +559,81 @@ async function runPerplexitySearch(params: {
   const endpoint = `${baseUrl}/chat/completions`;
   const model = resolvePerplexityRequestModel(baseUrl, params.model);
 
-  // Check rate limit before making request
-  checkRateLimit();
+  // Check rate limit and circuit breaker before making request
+  await checkRateLimit();
+  await checkCircuitBreaker();
 
   // Wrap fetch in retry logic with exponential backoff
-  const result = await retryAsync(
-    async () => {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${params.apiKey}`,
-          "HTTP-Referer": "https://openclaw.ai",
-          "X-Title": "OpenClaw Web Search",
-        },
-        body: JSON.stringify({
-          model: params.model,
-          messages: [
-            {
-              role: "user",
-              content: params.query,
-            },
-          ],
-        }),
-        signal: withTimeout(undefined, params.timeoutSeconds * 1000),
-      });
+  try {
+    const result = await retryAsync(
+      async () => {
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${params.apiKey}`,
+            "HTTP-Referer": "https://openclaw.ai",
+            "X-Title": "OpenClaw Web Search",
+          },
+          body: JSON.stringify({
+            model: params.model,
+            messages: [
+              {
+                role: "user",
+                content: params.query,
+              },
+            ],
+          }),
+          signal: withTimeout(undefined, params.timeoutSeconds * 1000),
+        });
 
-      if (!res.ok) {
-        const detail = await readResponseText(res);
-        const error = new Error(
-          `Perplexity API error (${res.status}): ${detail || res.statusText}`,
-        );
-        // Attach response for retry logic
-        (error as any).response = res;
-        throw error;
-      }
-
-      return res;
-    },
-    {
-      attempts: RETRY_ATTEMPTS,
-      minDelayMs: RETRY_MIN_DELAY_MS,
-      maxDelayMs: RETRY_MAX_DELAY_MS,
-      jitter: RETRY_JITTER,
-      shouldRetry: (err) => isRetryableError(err),
-      retryAfterMs: (err) => {
-        if (err instanceof Error && (err as any).response instanceof Response) {
-          return parseRetryAfter((err as any).response.headers);
+        if (!res.ok) {
+          const detail = await readResponseText(res);
+          const error = new Error(
+            `Perplexity API error (${res.status}): ${detail || res.statusText}`,
+          );
+          // Attach response for retry logic
+          (error as any).response = res;
+          throw error;
         }
-        return undefined;
-      },
-      onRetry: (info) => {
-        console.warn(
-          `[web_search] Perplexity API rate limited, retrying (${info.attempt}/${info.maxAttempts}) after ${info.delayMs}ms`,
-        );
-      },
-    },
-  );
 
-  const data = (await result.json()) as PerplexitySearchResponse;
-  const content = data.choices?.[0]?.message?.content ?? "No response";
-  const citations = data.citations ?? [];
+        return res;
+      },
+      {
+        attempts: RETRY_ATTEMPTS,
+        minDelayMs: RETRY_MIN_DELAY_MS,
+        maxDelayMs: RETRY_MAX_DELAY_MS,
+        jitter: RETRY_JITTER,
+        shouldRetry: (err) => isRetryableError(err),
+        retryAfterMs: (err) => {
+          if (err instanceof Error && (err as any).response instanceof Response) {
+            return parseRetryAfter((err as any).response.headers);
+          }
+          return undefined;
+        },
+        onRetry: (info) => {
+          console.warn(
+            `[web_search] Perplexity API rate limited, retrying (${info.attempt}/${info.maxAttempts}) after ${info.delayMs}ms`,
+          );
+        },
+      },
+    );
 
-  return { content, citations };
+    const data = (await result.json()) as PerplexitySearchResponse;
+    const content = data.choices?.[0]?.message?.content ?? "No response";
+    const citations = data.citations ?? [];
+
+    // Record success for circuit breaker
+    recordCircuitBreakerSuccess();
+
+    return { content, citations };
+  } catch (err) {
+    // Record failure for circuit breaker (only for retryable errors)
+    if (isRetryableError(err)) {
+      recordCircuitBreakerFailure();
+    }
+    throw err;
+  }
 }
 
 async function runGrokSearch(params: {
@@ -682,78 +778,91 @@ async function runWebSearch(params: {
     url.searchParams.set("freshness", params.freshness);
   }
 
-  // Check rate limit before making request
-  checkRateLimit();
+  // Check rate limit and circuit breaker before making request
+  await checkRateLimit();
+  await checkCircuitBreaker();
 
   // Wrap fetch in retry logic with exponential backoff
-  const res = await retryAsync(
-    async () => {
-      const response = await fetch(url.toString(), {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-          "X-Subscription-Token": params.apiKey,
-        },
-        signal: withTimeout(undefined, params.timeoutSeconds * 1000),
-      });
+  try {
+    const res = await retryAsync(
+      async () => {
+        const response = await fetch(url.toString(), {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+            "X-Subscription-Token": params.apiKey,
+          },
+          signal: withTimeout(undefined, params.timeoutSeconds * 1000),
+        });
 
-      if (!response.ok) {
-        const detail = await readResponseText(response);
-        const error = new Error(
-          `Brave Search API error (${response.status}): ${detail || response.statusText}`,
-        );
-        // Attach response for retry logic
-        (error as any).response = response;
-        throw error;
-      }
-
-      return response;
-    },
-    {
-      attempts: RETRY_ATTEMPTS,
-      minDelayMs: RETRY_MIN_DELAY_MS,
-      maxDelayMs: RETRY_MAX_DELAY_MS,
-      jitter: RETRY_JITTER,
-      shouldRetry: (err) => isRetryableError(err),
-      retryAfterMs: (err) => {
-        if (err instanceof Error && (err as any).response instanceof Response) {
-          return parseRetryAfter((err as any).response.headers);
+        if (!response.ok) {
+          const detail = await readResponseText(response);
+          const error = new Error(
+            `Brave Search API error (${response.status}): ${detail || response.statusText}`,
+          );
+          // Attach response for retry logic
+          (error as any).response = response;
+          throw error;
         }
-        return undefined;
-      },
-      onRetry: (info) => {
-        console.warn(
-          `[web_search] Brave Search API rate limited, retrying (${info.attempt}/${info.maxAttempts}) after ${info.delayMs}ms`,
-        );
-      },
-    },
-  );
 
-  const data = (await res.json()) as BraveSearchResponse;
-  const results = Array.isArray(data.web?.results) ? (data.web?.results ?? []) : [];
-  const mapped = results.map((entry) => {
-    const description = entry.description ?? "";
-    const title = entry.title ?? "";
-    const url = entry.url ?? "";
-    const rawSiteName = resolveSiteName(url);
-    return {
-      title: title ? wrapWebContent(title, "web_search") : "",
-      url, // Keep raw for tool chaining
-      description: description ? wrapWebContent(description, "web_search") : "",
-      published: entry.age || undefined,
-      siteName: rawSiteName || undefined,
+        return response;
+      },
+      {
+        attempts: RETRY_ATTEMPTS,
+        minDelayMs: RETRY_MIN_DELAY_MS,
+        maxDelayMs: RETRY_MAX_DELAY_MS,
+        jitter: RETRY_JITTER,
+        shouldRetry: (err) => isRetryableError(err),
+        retryAfterMs: (err) => {
+          if (err instanceof Error && (err as any).response instanceof Response) {
+            return parseRetryAfter((err as any).response.headers);
+          }
+          return undefined;
+        },
+        onRetry: (info) => {
+          console.warn(
+            `[web_search] Brave Search API rate limited, retrying (${info.attempt}/${info.maxAttempts}) after ${info.delayMs}ms`,
+          );
+        },
+      },
+    );
+
+    const data = (await res.json()) as BraveSearchResponse;
+    const results = Array.isArray(data.web?.results) ? (data.web?.results ?? []) : [];
+    const mapped = results.map((entry) => {
+      const description = entry.description ?? "";
+      const title = entry.title ?? "";
+      const url = entry.url ?? "";
+      const rawSiteName = resolveSiteName(url);
+      return {
+        title: title ? wrapWebContent(title, "web_search") : "",
+        url, // Keep raw for tool chaining
+        description: description ? wrapWebContent(description, "web_search") : "",
+        published: entry.age || undefined,
+        siteName: rawSiteName || undefined,
+      };
+    });
+
+    const payload = {
+      query: params.query,
+      provider: params.provider,
+      count: mapped.length,
+      tookMs: Date.now() - start,
+      results: mapped,
     };
-  });
+    writeCache(SEARCH_CACHE, cacheKey, payload, params.cacheTtlMs);
 
-  const payload = {
-    query: params.query,
-    provider: params.provider,
-    count: mapped.length,
-    tookMs: Date.now() - start,
-    results: mapped,
-  };
-  writeCache(SEARCH_CACHE, cacheKey, payload, params.cacheTtlMs);
-  return payload;
+    // Record success for circuit breaker
+    recordCircuitBreakerSuccess();
+
+    return payload;
+  } catch (err) {
+    // Record failure for circuit breaker (only for retryable errors)
+    if (isRetryableError(err)) {
+      recordCircuitBreakerFailure();
+    }
+    throw err;
+  }
 }
 
 export function createWebSearchTool(options?: {
@@ -854,4 +963,6 @@ export const __testing = {
   resolveGrokInlineCitations,
   parseRetryAfter,
   isRetryableError,
+  checkRateLimit,
+  checkCircuitBreaker,
 } as const;
