@@ -69,11 +69,10 @@ const QWEN_PORTAL_DEFAULT_COST = {
   cacheWrite: 0,
 };
 
-const OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1";
-const OLLAMA_API_BASE_URL = "http://127.0.0.1:11434";
-const OLLAMA_DEFAULT_CONTEXT_WINDOW = 128000;
-const OLLAMA_DEFAULT_MAX_TOKENS = 8192;
-const OLLAMA_DEFAULT_COST = {
+const LLAMA_SERVER_BASE_URL = "http://127.0.0.1:8080/v1";
+const LLAMA_SERVER_DEFAULT_CONTEXT_WINDOW = 128000;
+const LLAMA_SERVER_DEFAULT_MAX_TOKENS = 8192;
+const LLAMA_SERVER_DEFAULT_COST = {
   input: 0,
   output: 0,
   cacheRead: 0,
@@ -91,41 +90,37 @@ const QIANFAN_DEFAULT_COST = {
   cacheWrite: 0,
 };
 
-interface OllamaModel {
-  name: string;
-  modified_at: string;
-  size: number;
-  digest: string;
-  details?: {
-    family?: string;
-    parameter_size?: string;
-  };
+interface LlamaServerModel {
+  id: string;
+  object: string;
+  owned_by: string;
 }
 
-interface OllamaTagsResponse {
-  models: OllamaModel[];
+interface LlamaServerModelsResponse {
+  object: string;
+  data: LlamaServerModel[];
 }
 
-async function discoverOllamaModels(): Promise<ModelDefinitionConfig[]> {
-  // Skip Ollama discovery in test environments
+async function discoverLlamaServerModels(): Promise<ModelDefinitionConfig[]> {
+  // Skip discovery in test environments
   if (process.env.VITEST || process.env.NODE_ENV === "test") {
     return [];
   }
   try {
-    const response = await fetch(`${OLLAMA_API_BASE_URL}/api/tags`, {
+    const response = await fetch(`${LLAMA_SERVER_BASE_URL}/models`, {
       signal: AbortSignal.timeout(5000),
     });
     if (!response.ok) {
-      console.warn(`Failed to discover Ollama models: ${response.status}`);
+      console.warn(`Failed to discover llama-server models: ${response.status}`);
       return [];
     }
-    const data = (await response.json()) as OllamaTagsResponse;
-    if (!data.models || data.models.length === 0) {
-      console.warn("No Ollama models found on local instance");
+    const data = (await response.json()) as LlamaServerModelsResponse;
+    if (!data.data || data.data.length === 0) {
+      console.warn("No models found on local llama-server instance");
       return [];
     }
-    return data.models.map((model) => {
-      const modelId = model.name;
+    return data.data.map((model) => {
+      const modelId = model.id;
       const isReasoning =
         modelId.toLowerCase().includes("r1") || modelId.toLowerCase().includes("reasoning");
       return {
@@ -133,18 +128,13 @@ async function discoverOllamaModels(): Promise<ModelDefinitionConfig[]> {
         name: modelId,
         reasoning: isReasoning,
         input: ["text"],
-        cost: OLLAMA_DEFAULT_COST,
-        contextWindow: OLLAMA_DEFAULT_CONTEXT_WINDOW,
-        maxTokens: OLLAMA_DEFAULT_MAX_TOKENS,
-        // Disable streaming by default for Ollama to avoid SDK issue #1205
-        // See: https://github.com/badlogic/pi-mono/issues/1205
-        params: {
-          streaming: false,
-        },
+        cost: LLAMA_SERVER_DEFAULT_COST,
+        contextWindow: LLAMA_SERVER_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: LLAMA_SERVER_DEFAULT_MAX_TOKENS,
       };
     });
   } catch (error) {
-    console.warn(`Failed to discover Ollama models: ${String(error)}`);
+    console.warn(`Failed to discover llama-server models: ${String(error)}`);
     return [];
   }
 }
@@ -405,10 +395,10 @@ async function buildVeniceProvider(): Promise<ProviderConfig> {
   };
 }
 
-async function buildOllamaProvider(): Promise<ProviderConfig> {
-  const models = await discoverOllamaModels();
+async function buildLlamaServerProvider(): Promise<ProviderConfig> {
+  const models = await discoverLlamaServerModels();
   return {
-    baseUrl: OLLAMA_BASE_URL,
+    baseUrl: LLAMA_SERVER_BASE_URL,
     api: "openai-completions",
     models,
   };
@@ -528,12 +518,12 @@ export async function resolveImplicitProviders(params: {
     break;
   }
 
-  // Ollama provider - only add if explicitly configured
-  const ollamaKey =
-    resolveEnvApiKeyVarName("ollama") ??
-    resolveApiKeyFromProfiles({ provider: "ollama", store: authStore });
-  if (ollamaKey) {
-    providers.ollama = { ...(await buildOllamaProvider()), apiKey: ollamaKey };
+  // llama-server provider (llama.cpp) - only add if explicitly configured
+  const llamaServerKey =
+    resolveEnvApiKeyVarName("llama-server") ??
+    resolveApiKeyFromProfiles({ provider: "llama-server", store: authStore });
+  if (llamaServerKey) {
+    providers["llama-server"] = { ...(await buildLlamaServerProvider()), apiKey: llamaServerKey };
   }
 
   const qianfanKey =
