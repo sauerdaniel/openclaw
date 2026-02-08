@@ -51,6 +51,14 @@ describe("sanitizeUserFacingText", () => {
     expect(sanitizeUserFacingText(raw)).toBe("LLM error server_error: Something exploded");
   });
 
+  it("sanitizes Cloudflare 502 HTML", () => {
+    const html =
+      "<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center><hr><center>cloudflare</center></body></html>";
+    expect(sanitizeUserFacingText(html)).toBe(
+      "HTTP 502: Bad Gateway (Cloudflare). Upstream AI provider temporarily unavailable.",
+    );
+  });
+
   it("collapses consecutive duplicate paragraphs", () => {
     const text = "Hello there!\n\nHello there!";
     expect(sanitizeUserFacingText(text)).toBe("Hello there!");

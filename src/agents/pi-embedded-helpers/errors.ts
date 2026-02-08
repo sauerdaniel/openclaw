@@ -126,6 +126,27 @@ function collapseConsecutiveDuplicateBlocks(text: string): string {
   return result.join("\n\n");
 }
 
+function isCloudflare502Html(raw: string): boolean {
+  if (!raw) {
+    return false;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return false;
+  }
+  const lower = trimmed.toLowerCase();
+
+  // Common Cloudflare 502 HTML body we’ve observed being forwarded into chat.
+  // We treat this as a transient upstream/provider error.
+  const looksLikeHtml = lower.startsWith("<html") || lower.startsWith("<!doctype html");
+  return (
+    looksLikeHtml &&
+    lower.includes("502") &&
+    lower.includes("bad gateway") &&
+    lower.includes("cloudflare")
+  );
+}
+
 function isLikelyHttpErrorText(raw: string): boolean {
   const match = raw.match(HTTP_STATUS_PREFIX_RE);
   if (!match) {
@@ -383,6 +404,11 @@ export function formatAssistantErrorText(
     return `LLM request rejected: ${invalidRequest[1]}`;
   }
 
+  if (isCloudflare502Html(raw)) {
+    // Don’t leak raw HTML into chat; treat as upstream transient.
+    return "HTTP 502: Bad Gateway (Cloudflare). Upstream AI provider temporarily unavailable.";
+  }
+
   if (isOverloadedErrorMessage(raw)) {
     return "The AI service is temporarily overloaded. Please try again in a moment.";
   }
@@ -430,11 +456,18 @@ export function sanitizeUserFacingText(text: string): string {
     return BILLING_ERROR_USER_MESSAGE;
   }
 
+  if (isCloudflare502Html(trimmed)) {
+    return "HTTP 502: Bad Gateway (Cloudflare). Upstream AI provider temporarily unavailable.";
+  }
+
   if (isRawApiErrorPayload(trimmed) || isLikelyHttpErrorText(trimmed)) {
     return formatRawAssistantErrorForUi(trimmed);
   }
 
   if (ERROR_PREFIX_RE.test(trimmed)) {
+    if (isCloudflare502Html(trimmed)) {
+      return "HTTP 502: Bad Gateway (Cloudflare). Upstream AI provider temporarily unavailable.";
+    }
     if (isOverloadedErrorMessage(trimmed) || isRateLimitErrorMessage(trimmed)) {
       return "The AI service is temporarily overloaded. Please try again in a moment.";
     }
@@ -636,6 +669,9 @@ export function classifyFailoverReason(raw: string): FailoverReason | null {
   }
   if (isImageSizeError(raw)) {
     return null;
+  }
+  if (isCloudflare502Html(raw)) {
+    return "timeout";
   }
   if (isRateLimitErrorMessage(raw)) {
     return "rate_limit";
