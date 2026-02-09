@@ -10,7 +10,7 @@ import type {
   ParsedHookFrontmatter,
 } from "./types.js";
 import { MANIFEST_KEY } from "../compat/legacy-names.js";
-import { CONFIG_DIR, resolveUserPath } from "../utils.js";
+import { resolveConfigDir, resolveUserPath } from "../utils.js";
 import { resolveBundledHooksDir } from "./bundled-dir.js";
 import { shouldIncludeHook } from "./config.js";
 import {
@@ -197,7 +197,7 @@ function loadHookEntries(
     bundledHooksDir?: string;
   },
 ): HookEntry[] {
-  const managedHooksDir = opts?.managedHooksDir ?? path.join(CONFIG_DIR, "hooks");
+  const managedHooksDir = opts?.managedHooksDir ?? path.join(resolveConfigDir(), "hooks");
   const workspaceHooksDir = path.join(workspaceDir, "hooks");
   const bundledHooksDir = opts?.bundledHooksDir ?? resolveBundledHooksDir();
   const extraDirsRaw = opts?.config?.hooks?.internal?.load?.extraDirs ?? [];

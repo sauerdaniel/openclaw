@@ -14,12 +14,17 @@ import { loadInternalHooks } from "./loader.js";
 describe("loader", () => {
   let tmpDir: string;
   let originalBundledDir: string | undefined;
+  let originalStateDir: string | undefined;
 
   beforeEach(async () => {
     clearInternalHooks();
     // Create a temp directory for test modules
     tmpDir = path.join(os.tmpdir(), `openclaw-test-${Date.now()}`);
     await fs.mkdir(tmpDir, { recursive: true });
+
+    // Isolate any user-installed hooks by pointing OpenClaw's state dir at our temp workspace.
+    originalStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = tmpDir;
 
     // Disable bundled hooks during tests by setting env var to non-existent directory
     originalBundledDir = process.env.OPENCLAW_BUNDLED_HOOKS_DIR;
@@ -28,11 +33,17 @@ describe("loader", () => {
 
   afterEach(async () => {
     clearInternalHooks();
-    // Restore original env var
+    // Restore original env vars
     if (originalBundledDir === undefined) {
       delete process.env.OPENCLAW_BUNDLED_HOOKS_DIR;
     } else {
       process.env.OPENCLAW_BUNDLED_HOOKS_DIR = originalBundledDir;
+    }
+
+    if (originalStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = originalStateDir;
     }
     // Clean up temp directory
     try {
