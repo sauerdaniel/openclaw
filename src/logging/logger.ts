@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import { Logger as TsLogger } from "tslog";
 import type { OpenClawConfig } from "../config/types.js";
@@ -89,6 +90,21 @@ export function isFileLogLevelEnabled(level: LogLevel): boolean {
 
 function buildLogger(settings: ResolvedSettings): TsLogger<LogObj> {
   fs.mkdirSync(path.dirname(settings.file), { recursive: true });
+
+  // tslog does not call os.hostname(); it only checks env vars (HOSTNAME/HOST/COMPUTERNAME)
+  // and falls back to "unknown". Ensure we always have a hostname for consistent log metadata.
+  if (
+    !process.env.HOSTNAME?.trim() &&
+    !process.env.HOST?.trim() &&
+    !process.env.COMPUTERNAME?.trim()
+  ) {
+    try {
+      process.env.HOSTNAME = os.hostname();
+    } catch {
+      // best-effort only
+    }
+  }
+
   // Clean up stale rolling logs when using a dated log filename.
   if (isRollingPath(settings.file)) {
     pruneOldRollingLogs(path.dirname(settings.file));
