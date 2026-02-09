@@ -42,7 +42,7 @@ function errorBackoffMs(consecutiveErrors: number): number {
  * Handles consecutive error tracking, exponential backoff, one-shot disable,
  * and nextRunAtMs computation. Returns `true` if the job should be deleted.
  */
-function applyJobResult(
+export function applyJobResult(
   state: CronServiceState,
   job: CronJob,
   result: {
@@ -294,6 +294,9 @@ function findDueJobs(state: CronServiceState): CronJob[] {
     if (typeof j.state.runningAtMs === "number") {
       return false;
     }
+    if (j.schedule.kind === "at" && j.state.lastStatus === "ok" && j.state.lastRunAtMs) {
+      return false;
+    }
     const next = j.state.nextRunAtMs;
     return typeof next === "number" && now >= next;
   });
@@ -315,7 +318,7 @@ export async function runMissedJobs(state: CronServiceState) {
       return false;
     }
     const next = j.state.nextRunAtMs;
-    if (j.schedule.kind === "at" && j.state.lastStatus === "ok") {
+    if (j.schedule.kind === "at" && j.state.lastStatus === "ok" && j.state.lastRunAtMs) {
       return false;
     }
     return typeof next === "number" && now >= next;
@@ -347,6 +350,9 @@ export async function runDueJobs(state: CronServiceState) {
     if (typeof j.state.runningAtMs === "number") {
       return false;
     }
+    if (j.schedule.kind === "at" && j.state.lastStatus === "ok" && j.state.lastRunAtMs) {
+      return false;
+    }
     const next = j.state.nextRunAtMs;
     return typeof next === "number" && now >= next;
   });
@@ -355,7 +361,7 @@ export async function runDueJobs(state: CronServiceState) {
   }
 }
 
-async function executeJobCore(
+export async function executeJobCore(
   state: CronServiceState,
   job: CronJob,
 ): Promise<{

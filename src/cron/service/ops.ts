@@ -1,4 +1,4 @@
-import type { CronJobCreate, CronJobPatch } from "../types.js";
+import type { CronJob, CronJobCreate, CronJobPatch } from "../types.js";
 import type { CronServiceState } from "./state.js";
 import {
   applyJobPatch,
@@ -11,16 +11,28 @@ import {
 } from "./jobs.js";
 import { locked } from "./locked.js";
 import { ensureLoaded, persist, warnIfDisabled } from "./store.js";
-import { armTimer, emit, executeJob, runMissedJobs, stopTimer, wake } from "./timer.js";
+import {
+  armTimer,
+  applyJobResult,
+  emit,
+  executeJobCore,
+  onTimer,
+  stopTimer,
+  wake,
+} from "./timer.js";
 
 export async function start(state: CronServiceState) {
+  if (!state.deps.cronEnabled) {
+    state.deps.log.info({ enabled: false }, "cron: disabled");
+    return;
+  }
+
+  // Phase 1: load persisted store without recomputing next runs (preserves persisted
+  // nextRunAtMs for restart catch-up), and clear stale running markers.
   await locked(state, async () => {
-    if (!state.deps.cronEnabled) {
-      state.deps.log.info({ enabled: false }, "cron: disabled");
-      return;
-    }
     await ensureLoaded(state, { skipRecompute: true });
     const jobs = state.store?.jobs ?? [];
+    let mutated = false;
     for (const job of jobs) {
       if (typeof job.state.runningAtMs === "number") {
         state.deps.log.warn(
@@ -28,11 +40,27 @@ export async function start(state: CronServiceState) {
           "cron: clearing stale running marker on startup",
         );
         job.state.runningAtMs = undefined;
+        mutated = true;
       }
     }
-    await runMissedJobs(state);
-    recomputeNextRuns(state);
-    await persist(state);
+    if (mutated) {
+      await persist(state);
+    }
+  });
+
+  // Phase 2: run any due jobs without holding the store lock. This keeps
+  // cron.status/cron.list responsive even if a catch-up job is slow.
+  await onTimer(state);
+
+  // Phase 3: ensure next runs are consistent, arm the timer, and log.
+  await locked(state, async () => {
+    await ensureLoaded(state, { skipRecompute: true });
+    if (state.store) {
+      const changed = recomputeNextRuns(state);
+      if (changed) {
+        await persist(state);
+      }
+    }
     armTimer(state);
     state.deps.log.info(
       {
@@ -183,24 +211,122 @@ export async function remove(state: CronServiceState, id: string) {
 }
 
 export async function run(state: CronServiceState, id: string, mode?: "due" | "force") {
-  return await locked(state, async () => {
-    warnIfDisabled(state, "run");
+  warnIfDisabled(state, "run");
+
+  type RunPreflight =
+    | { ok: true; ran: false; reason: "already-running" | "not-due" }
+    | { ok: true; ran: true; startedAt: number; snapshot: CronJob };
+
+  const forced = mode === "force";
+
+  const preflight: RunPreflight = await locked(state, async () => {
     await ensureLoaded(state, { skipRecompute: true });
     const job = findJobOrThrow(state, id);
+
     if (typeof job.state.runningAtMs === "number") {
-      return { ok: true, ran: false, reason: "already-running" as const };
+      return { ok: true, ran: false, reason: "already-running" };
     }
+
     const now = state.deps.nowMs();
-    const due = isJobDue(job, now, { forced: mode === "force" });
+    const due = isJobDue(job, now, { forced });
     if (!due) {
-      return { ok: true, ran: false, reason: "not-due" as const };
+      return { ok: true, ran: false, reason: "not-due" };
     }
-    await executeJob(state, job, now, { forced: mode === "force" });
-    recomputeNextRuns(state);
-    await persist(state);
-    armTimer(state);
-    return { ok: true, ran: true } as const;
+
+    job.state.runningAtMs = now;
+    job.state.lastError = undefined;
+
+    const snapshot: CronJob = structuredClone(job);
+
+    return { ok: true, ran: true, startedAt: now, snapshot };
   });
+
+  if (preflight.ran === false) {
+    return preflight;
+  }
+
+  const { snapshot, startedAt } = preflight;
+
+  const prevSchedulerRunning = state.running;
+  state.running = true;
+  try {
+    emit(state, { jobId: id, action: "started", runAtMs: startedAt });
+
+    const jobTimeoutMs =
+      snapshot.payload.kind === "agentTurn" && typeof snapshot.payload.timeoutSeconds === "number"
+        ? snapshot.payload.timeoutSeconds * 1_000
+        : 10 * 60_000;
+
+    let coreResult: {
+      status: "ok" | "error" | "skipped";
+      error?: string;
+      summary?: string;
+      sessionId?: string;
+      sessionKey?: string;
+    };
+
+    try {
+      let timeoutId: NodeJS.Timeout;
+      coreResult = await Promise.race([
+        executeJobCore(state, snapshot),
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new Error("cron: job execution timed out")),
+            jobTimeoutMs,
+          );
+        }),
+      ]).finally(() => clearTimeout(timeoutId!));
+    } catch (err) {
+      state.deps.log.warn(
+        { jobId: id, jobName: snapshot.name, timeoutMs: jobTimeoutMs },
+        `cron: job failed: ${String(err)}`,
+      );
+      coreResult = { status: "error", error: String(err) };
+    }
+
+    const endedAt = state.deps.nowMs();
+
+    await locked(state, async () => {
+      await ensureLoaded(state, { skipRecompute: true });
+      const job = state.store?.jobs.find((j) => j.id === id);
+      if (!job) {
+        return;
+      }
+
+      const shouldDelete = applyJobResult(state, job, {
+        status: coreResult.status,
+        error: coreResult.error,
+        startedAt,
+        endedAt,
+      });
+
+      emit(state, {
+        jobId: job.id,
+        action: "finished",
+        status: coreResult.status,
+        error: coreResult.error,
+        summary: coreResult.summary,
+        sessionId: coreResult.sessionId,
+        sessionKey: coreResult.sessionKey,
+        runAtMs: startedAt,
+        durationMs: job.state.lastDurationMs,
+        nextRunAtMs: job.state.nextRunAtMs,
+      });
+
+      if (shouldDelete && state.store) {
+        state.store.jobs = state.store.jobs.filter((j) => j.id !== job.id);
+        emit(state, { jobId: job.id, action: "removed" });
+      }
+
+      recomputeNextRuns(state);
+      await persist(state);
+      armTimer(state);
+    });
+
+    return { ok: true, ran: true } as const;
+  } finally {
+    state.running = prevSchedulerRunning;
+  }
 }
 
 export function wakeNow(
