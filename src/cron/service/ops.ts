@@ -73,6 +73,30 @@ export async function start(state: CronServiceState) {
   });
 }
 
+/**
+ * Auto-clear stale runningAtMs markers during list/status operations.
+ * Safety net for cases where job execution hangs (e.g., agent context explosion).
+ * Threshold: 30 minutes (max job timeout is 20 minutes).
+ */
+async function clearStaleRunningMarkers(state: CronServiceState): Promise<boolean> {
+  const jobs = state.store?.jobs ?? [];
+  const now = state.deps.nowMs();
+  const STALE_THRESHOLD_MS = 30 * 60_000; // 30 minutes
+  let mutated = false;
+  for (const job of jobs) {
+    const runningAt = job.state.runningAtMs;
+    if (typeof runningAt === "number" && now - runningAt > STALE_THRESHOLD_MS) {
+      state.deps.log.warn(
+        { jobId: job.id, ageMs: now - runningAt, runningAtMs: runningAt },
+        "cron: auto-clearing stale running marker",
+      );
+      job.state.runningAtMs = undefined;
+      mutated = true;
+    }
+  }
+  return mutated;
+}
+
 export function stop(state: CronServiceState) {
   stopTimer(state);
 }
@@ -80,6 +104,12 @@ export function stop(state: CronServiceState) {
 export async function status(state: CronServiceState) {
   return await locked(state, async () => {
     await ensureLoaded(state, { skipRecompute: true });
+
+    const cleared = await clearStaleRunningMarkers(state);
+    if (cleared) {
+      await persist(state);
+    }
+
     if (state.store) {
       const changed = recomputeNextRuns(state);
       if (changed) {
@@ -98,6 +128,12 @@ export async function status(state: CronServiceState) {
 export async function list(state: CronServiceState, opts?: { includeDisabled?: boolean }) {
   return await locked(state, async () => {
     await ensureLoaded(state, { skipRecompute: true });
+
+    const cleared = await clearStaleRunningMarkers(state);
+    if (cleared) {
+      await persist(state);
+    }
+
     if (state.store) {
       const changed = recomputeNextRuns(state);
       if (changed) {
