@@ -1,6 +1,7 @@
 import type { OpenClawConfig } from "../../config/config.js";
 import type { ThinkLevel } from "./directives.js";
 import { clearSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
+import { resolveContextWindowInfo } from "../../agents/context-window-guard.js";
 import { lookupContextTokens } from "../../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { loadModelCatalog } from "../../agents/model-catalog.js";
@@ -577,7 +578,17 @@ export function resolveModelDirectiveSelection(params: {
 export function resolveContextTokens(params: {
   agentCfg: NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]> | undefined;
   model: string;
+  cfg?: OpenClawConfig;
+  provider?: string;
 }): number {
+  if (params.cfg && params.provider) {
+    return resolveContextWindowInfo({
+      cfg: params.cfg,
+      provider: params.provider,
+      modelId: params.model,
+      defaultTokens: DEFAULT_CONTEXT_TOKENS,
+    }).tokens;
+  }
   return (
     params.agentCfg?.contextTokens ?? lookupContextTokens(params.model) ?? DEFAULT_CONTEXT_TOKENS
   );

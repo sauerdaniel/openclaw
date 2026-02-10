@@ -11,7 +11,7 @@ import {
 } from "../../agents/agent-scope.js";
 import { runCliAgent } from "../../agents/cli-runner.js";
 import { getCliSessionId, setCliSessionId } from "../../agents/cli-session.js";
-import { lookupContextTokens } from "../../agents/context.js";
+import { resolveContextWindowInfo } from "../../agents/context-window-guard.js";
 import {
   formatUserTime,
   resolveUserTimeFormat,
@@ -439,8 +439,12 @@ export async function runCronIsolatedAgentTurn(params: {
     const usage = runResult.meta.agentMeta?.usage;
     const modelUsed = runResult.meta.agentMeta?.model ?? fallbackModel ?? model;
     const providerUsed = runResult.meta.agentMeta?.provider ?? fallbackProvider ?? provider;
-    const contextTokens =
-      agentCfg?.contextTokens ?? lookupContextTokens(modelUsed) ?? DEFAULT_CONTEXT_TOKENS;
+    const contextTokens = resolveContextWindowInfo({
+      cfg: cfgWithAgentDefaults,
+      provider: providerUsed,
+      modelId: modelUsed,
+      defaultTokens: DEFAULT_CONTEXT_TOKENS,
+    }).tokens;
 
     cronSession.sessionEntry.modelProvider = providerUsed;
     cronSession.sessionEntry.model = modelUsed;
