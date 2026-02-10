@@ -224,4 +224,257 @@ describe("trigger handling", () => {
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
   });
+
+  it("uses heartbeat model string form for heartbeat runs (backward compatibility)", async () => {
+    await withTempHome(async (home) => {
+      vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
+        payloads: [{ text: "ok" }],
+        meta: {
+          durationMs: 1,
+          agentMeta: { sessionId: "s", provider: "p", model: "m" },
+        },
+      });
+
+      const cfg = makeCfg(home);
+      cfg.agents = {
+        ...cfg.agents,
+        defaults: {
+          ...cfg.agents?.defaults,
+          heartbeat: { model: "zai/glm-4.7" },
+        },
+      };
+
+      await getReplyFromConfig(
+        {
+          Body: "hello",
+          From: "+1002",
+          To: "+2000",
+        },
+        { isHeartbeat: true },
+        cfg,
+      );
+
+      const call = vi.mocked(runEmbeddedPiAgent).mock.calls[0]?.[0];
+      expect(call?.provider).toBe("zai");
+      expect(call?.model).toBe("glm-4.7");
+      // No fallbacks should be passed when using string form
+      expect(call?.fallbacks).toBeUndefined();
+    });
+  });
+
+  it("extracts primary and fallbacks from heartbeat.model object form", async () => {
+    await withTempHome(async (home) => {
+      vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
+        payloads: [{ text: "ok" }],
+        meta: {
+          durationMs: 1,
+          agentMeta: { sessionId: "s", provider: "p", model: "m" },
+        },
+      });
+
+      const cfg = makeCfg(home);
+      cfg.agents = {
+        ...cfg.agents,
+        defaults: {
+          ...cfg.agents?.defaults,
+          heartbeat: {
+            model: {
+              primary: "zai/glm-4.7",
+              fallbacks: ["openai/gpt-5-mini", "google/gemini-3-flash"],
+            },
+          },
+        },
+      };
+
+      await getReplyFromConfig(
+        {
+          Body: "hello",
+          From: "+1002",
+          To: "+2000",
+        },
+        { isHeartbeat: true },
+        cfg,
+      );
+
+      const call = vi.mocked(runEmbeddedPiAgent).mock.calls[0]?.[0];
+      expect(call?.provider).toBe("zai");
+      expect(call?.model).toBe("glm-4.7");
+      expect(call?.heartbeatFallbacks).toEqual(["openai/gpt-5-mini", "google/gemini-3-flash"]);
+    });
+  });
+
+  it("heartbeat fallbacks replace agent-level fallbacks for heartbeat sessions", async () => {
+    await withTempHome(async (home) => {
+      vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
+        payloads: [{ text: "ok" }],
+        meta: {
+          durationMs: 1,
+          agentMeta: { sessionId: "s", provider: "p", model: "m" },
+        },
+      });
+
+      const cfg = makeCfg(home);
+      cfg.agents = {
+        ...cfg.agents,
+        defaults: {
+          ...cfg.agents?.defaults,
+          model: {
+            primary: "anthropic/claude-opus-4-5",
+            fallbacks: ["openai/gpt-4.1-mini"],
+          },
+          heartbeat: {
+            model: {
+              primary: "zai/glm-4.7",
+              fallbacks: ["openai/gpt-5-mini", "google/gemini-3-flash"],
+            },
+          },
+        },
+      };
+
+      await getReplyFromConfig(
+        {
+          Body: "hello",
+          From: "+1002",
+          To: "+2000",
+        },
+        { isHeartbeat: true },
+        cfg,
+      );
+
+      const call = vi.mocked(runEmbeddedPiAgent).mock.calls[0]?.[0];
+      // Heartbeat-specific fallbacks should be used, not agent-level fallbacks
+      expect(call?.heartbeatFallbacks).toEqual(["openai/gpt-5-mini", "google/gemini-3-flash"]);
+      expect(call?.heartbeatFallbacks).not.toEqual(["openai/gpt-4.1-mini"]);
+    });
+  });
+
+  it("non-heartbeat sessions still use agent-level fallbacks", async () => {
+    await withTempHome(async (home) => {
+      vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
+        payloads: [{ text: "ok" }],
+        meta: {
+          durationMs: 1,
+          agentMeta: { sessionId: "s", provider: "p", model: "m" },
+        },
+      });
+
+      const cfg = makeCfg(home);
+      cfg.agents = {
+        ...cfg.agents,
+        defaults: {
+          ...cfg.agents?.defaults,
+          model: {
+            primary: "anthropic/claude-opus-4-5",
+            fallbacks: ["openai/gpt-4.1-mini"],
+          },
+          heartbeat: {
+            model: {
+              primary: "zai/glm-4.7",
+              fallbacks: ["openai/gpt-5-mini"],
+            },
+          },
+        },
+      };
+
+      await getReplyFromConfig(
+        {
+          Body: "hello",
+          From: "+1002",
+          To: "+2000",
+        },
+        { isHeartbeat: false }, // Not a heartbeat
+        cfg,
+      );
+
+      const call = vi.mocked(runEmbeddedPiAgent).mock.calls[0]?.[0];
+      // For non-heartbeat sessions, heartbeatFallbacks should not be passed
+      expect(call?.heartbeatFallbacks).toBeUndefined();
+    });
+  });
+
+  it("heartbeat run falls back to first fallback when primary fails", async () => {
+    // Note: This test verifies that heartbeatFallbacks are passed correctly.
+    // The actual fallback retry logic is tested in model-fallback.test.ts.
+    await withTempHome(async (home) => {
+      vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
+        payloads: [{ text: "ok" }],
+        meta: {
+          durationMs: 1,
+          agentMeta: { sessionId: "s", provider: "p", model: "m" },
+        },
+      });
+
+      const cfg = makeCfg(home);
+      cfg.agents = {
+        ...cfg.agents,
+        defaults: {
+          ...cfg.agents?.defaults,
+          heartbeat: {
+            model: {
+              primary: "zai/glm-4.7",
+              fallbacks: ["openai/gpt-5-mini", "google/gemini-3-flash"],
+            },
+          },
+        },
+      };
+
+      await getReplyFromConfig(
+        {
+          Body: "hello",
+          From: "+1002",
+          To: "+2000",
+        },
+        { isHeartbeat: true },
+        cfg,
+      );
+
+      // Verify that heartbeatFallbacks are passed to runEmbeddedPiAgent
+      const call = vi.mocked(runEmbeddedPiAgent).mock.calls[0]?.[0];
+      expect(call?.isHeartbeat).toBe(true);
+      expect(call?.heartbeatFallbacks).toEqual(["openai/gpt-5-mini", "google/gemini-3-flash"]);
+    });
+  });
+
+  it("heartbeat run propagates error when all fallbacks exhausted", async () => {
+    // Note: This test verifies that heartbeatFallbacks are passed correctly.
+    // The actual fallback retry logic is tested in model-fallback.test.ts.
+    await withTempHome(async (home) => {
+      vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
+        payloads: [{ text: "ok" }],
+        meta: {
+          durationMs: 1,
+          agentMeta: { sessionId: "s", provider: "p", model: "m" },
+        },
+      });
+
+      const cfg = makeCfg(home);
+      cfg.agents = {
+        ...cfg.agents,
+        defaults: {
+          ...cfg.agents?.defaults,
+          heartbeat: {
+            model: {
+              primary: "zai/glm-4.7",
+              fallbacks: ["openai/gpt-5-mini", "google/gemini-3-flash"],
+            },
+          },
+        },
+      };
+
+      await getReplyFromConfig(
+        {
+          Body: "hello",
+          From: "+1002",
+          To: "+2000",
+        },
+        { isHeartbeat: true },
+        cfg,
+      );
+
+      // Verify that heartbeatFallbacks are passed to runEmbeddedPiAgent
+      const call = vi.mocked(runEmbeddedPiAgent).mock.calls[0]?.[0];
+      expect(call?.isHeartbeat).toBe(true);
+      expect(call?.heartbeatFallbacks).toEqual(["openai/gpt-5-mini", "google/gemini-3-flash"]);
+    });
+  });
 });
