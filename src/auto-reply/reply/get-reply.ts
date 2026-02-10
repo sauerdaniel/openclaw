@@ -78,8 +78,16 @@ export async function getReplyFromConfig(
   });
   let provider = defaultProvider;
   let model = defaultModel;
+  let heartbeatFallbacks: string[] | undefined;
   if (opts?.isHeartbeat) {
-    const heartbeatRaw = agentCfg?.heartbeat?.model?.trim() ?? "";
+    const heartbeatModel = agentCfg?.heartbeat?.model;
+    let heartbeatRaw = "";
+    if (typeof heartbeatModel === "string") {
+      heartbeatRaw = heartbeatModel.trim();
+    } else if (heartbeatModel && typeof heartbeatModel === "object") {
+      heartbeatRaw = heartbeatModel.primary?.trim() ?? "";
+      heartbeatFallbacks = heartbeatModel.fallbacks;
+    }
     const heartbeatRef = heartbeatRaw
       ? resolveModelRefFromString({
           raw: heartbeatRaw,
@@ -317,6 +325,7 @@ export async function getReplyFromConfig(
     perMessageQueueMode,
     perMessageQueueOptions,
     typing,
+    heartbeatFallbacks,
     opts: resolvedOpts,
     defaultProvider,
     defaultModel,

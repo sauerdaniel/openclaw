@@ -176,8 +176,11 @@ export async function runEmbeddedPiAgent(
       const provider = (params.provider ?? DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
       const modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
       const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
+      const heartbeatFallbacks = params.isHeartbeat ? params.heartbeatFallbacks : undefined;
       const fallbackConfigured =
-        (params.config?.agents?.defaults?.model?.fallbacks?.length ?? 0) > 0;
+        heartbeatFallbacks !== undefined
+          ? heartbeatFallbacks.length > 0
+          : (params.config?.agents?.defaults?.model?.fallbacks?.length ?? 0) > 0;
       await ensureOpenClawModelsJson(params.config, agentDir);
 
       const { model, error, authStorage, modelRegistry } = resolveModel(

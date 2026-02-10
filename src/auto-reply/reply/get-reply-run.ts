@@ -90,6 +90,7 @@ type RunPreparedReplyParams = {
     dropPolicy?: InlineDirectives["dropPolicy"];
   };
   typing: TypingController;
+  heartbeatFallbacks?: string[];
   opts?: GetReplyOptions;
   defaultProvider: string;
   defaultModel: string;
@@ -134,6 +135,7 @@ export async function runPreparedReply(
     perMessageQueueMode,
     perMessageQueueOptions,
     typing,
+    heartbeatFallbacks,
     opts,
     defaultProvider,
     defaultModel,
@@ -416,6 +418,7 @@ export async function runPreparedReply(
     isStreaming,
     opts,
     typing,
+    heartbeatFallbacks,
     sessionEntry,
     sessionStore,
     sessionKey,

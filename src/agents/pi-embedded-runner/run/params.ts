@@ -67,6 +67,10 @@ export type RunEmbeddedPiAgentParams = {
   disableTools?: boolean;
   provider?: string;
   model?: string;
+  /** True if this is a heartbeat run (to use heartbeat-specific fallbacks). */
+  isHeartbeat?: boolean;
+  /** Fallbacks for heartbeat runs (replaces agent-level fallbacks). */
+  heartbeatFallbacks?: string[];
   authProfileId?: string;
   authProfileIdSource?: "auto" | "user";
   thinkLevel?: ThinkLevel;

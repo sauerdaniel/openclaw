@@ -19,7 +19,17 @@ export const HeartbeatSchema = z
       })
       .strict()
       .optional(),
-    model: z.string().optional(),
+    model: z
+      .union([
+        z.string(),
+        z
+          .object({
+            primary: z.string().optional(),
+            fallbacks: z.array(z.string()).optional(),
+          })
+          .strict(),
+      ])
+      .optional(),
     session: z.string().optional(),
     includeReasoning: z.boolean().optional(),
     target: z.string().optional(),

@@ -81,7 +81,12 @@ export type HeartbeatSummary = {
   everyMs: number | null;
   prompt: string;
   target: string;
-  model?: string;
+  model?:
+    | string
+    | {
+        primary?: string;
+        fallbacks?: string[];
+      };
   ackMaxChars: number;
 };
 

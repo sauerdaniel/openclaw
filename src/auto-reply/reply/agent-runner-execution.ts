@@ -73,6 +73,7 @@ export async function runAgentTurnWithFallback(params: {
   resetSessionAfterCompactionFailure: (reason: string) => Promise<boolean>;
   resetSessionAfterRoleOrderingConflict: (reason: string) => Promise<boolean>;
   isHeartbeat: boolean;
+  heartbeatFallbacks?: string[];
   sessionKey?: string;
   getActiveSessionEntry: () => SessionEntry | undefined;
   activeSessionStore?: Record<string, SessionEntry>;
@@ -286,6 +287,8 @@ export async function runAgentTurnWithFallback(params: {
             enforceFinalTag: resolveEnforceFinalTag(params.followupRun.run, provider),
             provider,
             model,
+            isHeartbeat: params.isHeartbeat,
+            heartbeatFallbacks: params.heartbeatFallbacks,
             authProfileId,
             authProfileIdSource: authProfileId
               ? params.followupRun.run.authProfileIdSource

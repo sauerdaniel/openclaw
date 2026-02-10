@@ -55,6 +55,7 @@ export async function runReplyAgent(params: {
   isStreaming: boolean;
   opts?: GetReplyOptions;
   typing: TypingController;
+  heartbeatFallbacks?: string[];
   sessionEntry?: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
@@ -86,6 +87,7 @@ export async function runReplyAgent(params: {
     isStreaming,
     opts,
     typing,
+    heartbeatFallbacks,
     sessionEntry,
     sessionStore,
     sessionKey,
@@ -324,6 +326,7 @@ export async function runReplyAgent(params: {
       resetSessionAfterCompactionFailure,
       resetSessionAfterRoleOrderingConflict,
       isHeartbeat,
+      heartbeatFallbacks,
       sessionKey,
       getActiveSessionEntry: () => activeSessionEntry,
       activeSessionStore,
