@@ -19,6 +19,7 @@ import {
   resolveExecApprovals,
   resolveExecApprovalsFromFile,
 } from "../infra/exec-approvals.js";
+import { detectPseudoToolSyntax } from "../infra/exec-safety.js";
 import { requestHeartbeatNow } from "../infra/heartbeat-wake.js";
 import { buildNodeShellCommand } from "../infra/node-shell.js";
 import {
@@ -847,6 +848,14 @@ export function createExecTool(
 
       if (!params.command) {
         throw new Error("Provide a command to start.");
+      }
+
+      // Security: Reject pseudo-tool syntax that indicates malformed tool calls
+      // (e.g., process<arg key>action</arg><arg value>poll)
+      if (detectPseudoToolSyntax(params.command)) {
+        throw new Error(
+          "Invalid command: detected pseudo-tool syntax. Use the structured tool call instead of passing pseudo-XML as shell command.",
+        );
       }
 
       const maxOutput = DEFAULT_MAX_OUTPUT;

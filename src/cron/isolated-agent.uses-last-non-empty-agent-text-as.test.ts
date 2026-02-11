@@ -247,7 +247,7 @@ describe("runCronIsolatedAgentTurn", () => {
         workspaceDir?: string;
         sessionFile?: string;
       };
-      expect(call?.sessionKey).toBe("agent:ops:cron:job-ops");
+      expect(call?.sessionKey).toMatch(/^agent:ops:cron:job-ops:run:[^:]+$/);
       expect(call?.workspaceDir).toBe(opsWorkspace);
       expect(call?.sessionFile).toContain(path.join("agents", "ops"));
     });
@@ -619,6 +619,55 @@ describe("runCronIsolatedAgentTurn", () => {
       expect(second?.sessionId).not.toBe(first?.sessionId);
       expect(first?.label).toBe("Cron: job-1");
       expect(second?.label).toBe("Cron: job-1");
+    });
+  });
+
+  it("uses a per-run execution session key for cron jobs", async () => {
+    await withTempHome(async (home) => {
+      const storePath = await writeSessionStore(home);
+      const deps: CliDeps = {
+        sendMessageWhatsApp: vi.fn(),
+        sendMessageTelegram: vi.fn(),
+        sendMessageDiscord: vi.fn(),
+        sendMessageSignal: vi.fn(),
+        sendMessageIMessage: vi.fn(),
+      };
+      vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
+        payloads: [{ text: "ok" }],
+        meta: {
+          durationMs: 5,
+          agentMeta: { sessionId: "s", provider: "p", model: "m" },
+        },
+      });
+
+      const cfg = makeCfg(home, storePath);
+      const job = makeJob({ kind: "agentTurn", message: "ping", deliver: false });
+
+      await runCronIsolatedAgentTurn({
+        cfg,
+        deps,
+        job,
+        message: "ping",
+        sessionKey: "cron:job-1",
+        lane: "cron",
+      });
+
+      await runCronIsolatedAgentTurn({
+        cfg,
+        deps,
+        job,
+        message: "ping",
+        sessionKey: "cron:job-1",
+        lane: "cron",
+      });
+
+      const calls = vi.mocked(runEmbeddedPiAgent).mock.calls;
+      const first = calls[0]?.[0] as { sessionKey?: string } | undefined;
+      const second = calls[1]?.[0] as { sessionKey?: string } | undefined;
+
+      expect(first?.sessionKey).toMatch(/^agent:main:cron:job-1:run:[^:]+$/);
+      expect(second?.sessionKey).toMatch(/^agent:main:cron:job-1:run:[^:]+$/);
+      expect(second?.sessionKey).not.toBe(first?.sessionKey);
     });
   });
 

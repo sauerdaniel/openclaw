@@ -372,7 +372,7 @@ export async function runCronIsolatedAgentTurn(params: {
       normalizeVerboseLevel(agentCfg?.verboseDefault) ??
       "off";
     registerAgentRunContext(cronSession.sessionEntry.sessionId, {
-      sessionKey: agentSessionKey,
+      sessionKey: runSessionKey,
       verboseLevel: resolvedVerboseLevel,
     });
     const messageChannel = resolvedDelivery.channel;
@@ -387,7 +387,7 @@ export async function runCronIsolatedAgentTurn(params: {
           const cliSessionId = getCliSessionId(cronSession.sessionEntry, providerOverride);
           return runCliAgent({
             sessionId: cronSession.sessionEntry.sessionId,
-            sessionKey: agentSessionKey,
+            sessionKey: runSessionKey,
             agentId,
             sessionFile,
             workspaceDir,
@@ -403,7 +403,7 @@ export async function runCronIsolatedAgentTurn(params: {
         }
         return runEmbeddedPiAgent({
           sessionId: cronSession.sessionEntry.sessionId,
-          sessionKey: agentSessionKey,
+          sessionKey: runSessionKey,
           agentId,
           messageChannel,
           agentAccountId: resolvedDelivery.accountId,
