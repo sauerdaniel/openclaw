@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { startHeartbeatRunner } from "./heartbeat-runner.js";
+import { requestHeartbeatNow } from "./heartbeat-wake.js";
 
 describe("startHeartbeatRunner", () => {
   afterEach(() => {
@@ -50,6 +51,43 @@ describe("startHeartbeatRunner", () => {
     expect(runSpy).toHaveBeenCalledTimes(3);
     expect(runSpy.mock.calls[2]?.[0]).toEqual(
       expect.objectContaining({ agentId: "ops", heartbeat: { every: "15m" } }),
+    );
+
+    runner.stop();
+  });
+
+  it("routes exec-event wakes to the originating session", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+
+    const runSpy = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
+
+    const runner = startHeartbeatRunner({
+      cfg: {
+        agents: {
+          defaults: { heartbeat: { every: "30m" } },
+          list: [
+            { id: "main", heartbeat: { every: "30m" } },
+            { id: "ops", heartbeat: { every: "30m" } },
+          ],
+        },
+      } as OpenClawConfig,
+      runOnce: runSpy,
+    });
+
+    requestHeartbeatNow({ reason: "exec-event:agent:ops:telegram:chat:123" });
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(runSpy.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        agentId: "ops",
+        reason: "exec-event",
+        heartbeat: expect.objectContaining({
+          session: "agent:ops:telegram:chat:123",
+          target: "last",
+        }),
+      }),
     );
 
     runner.stop();

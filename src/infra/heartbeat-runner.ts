@@ -65,6 +65,17 @@ type HeartbeatDeps = OutboundSendDeps &
 const log = createSubsystemLogger("gateway/heartbeat");
 let heartbeatsEnabled = true;
 
+const EXEC_EVENT_REASON = "exec-event";
+const EXEC_EVENT_REASON_PREFIX = `${EXEC_EVENT_REASON}:`;
+
+function resolveTargetedExecSessionKey(reason?: string): string | null {
+  if (!reason?.startsWith(EXEC_EVENT_REASON_PREFIX)) {
+    return null;
+  }
+  const rawSessionKey = reason.slice(EXEC_EVENT_REASON_PREFIX.length).trim();
+  return rawSessionKey.length > 0 ? rawSessionKey : null;
+}
+
 export function setHeartbeatsEnabled(enabled: boolean) {
   heartbeatsEnabled = enabled;
 }
@@ -521,7 +532,7 @@ export async function runHeartbeatOnce(opts: {
   // This saves API calls/costs when the file is effectively empty (only comments/headers).
   // EXCEPTION: Don't skip for exec events or cron events - they have pending system events
   // to process regardless of HEARTBEAT.md content.
-  const isExecEventReason = opts.reason === "exec-event";
+  const isExecEventReason = opts.reason === EXEC_EVENT_REASON;
   const isCronEventReason = Boolean(opts.reason?.startsWith("cron:"));
   const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
   const heartbeatFilePath = path.join(workspaceDir, DEFAULT_HEARTBEAT_FILENAME);
@@ -577,7 +588,7 @@ export async function runHeartbeatOnce(opts: {
   // Check if this is an exec event or cron event with pending system events.
   // If so, use a specialized prompt that instructs the model to relay the result
   // instead of the standard heartbeat prompt with "reply HEARTBEAT_OK".
-  const isExecEvent = opts.reason === "exec-event";
+  const isExecEvent = opts.reason === EXEC_EVENT_REASON;
   const isCronEvent = Boolean(opts.reason?.startsWith("cron:"));
   const pendingEvents = isExecEvent || isCronEvent ? peekSystemEvents(sessionKey) : [];
   const hasExecCompletion = pendingEvents.some((evt) => evt.includes("Exec finished"));
@@ -1008,10 +1019,46 @@ export function startHeartbeatRunner(opts: {
     }
 
     const reason = params?.reason;
+    const targetedExecSessionKey = resolveTargetedExecSessionKey(reason);
     const isInterval = reason === "interval";
     const startedAt = Date.now();
     const now = startedAt;
     let ran = false;
+
+    if (targetedExecSessionKey) {
+      const targetAgentId =
+        normalizeAgentId(resolveAgentIdFromSessionKey(targetedExecSessionKey)) ||
+        resolveDefaultAgentId(state.cfg);
+      const targetHeartbeat = {
+        ...resolveHeartbeatConfig(state.cfg, targetAgentId),
+        session: targetedExecSessionKey,
+        target: "last" as const,
+      };
+
+      const res = await runOnce({
+        cfg: state.cfg,
+        agentId: targetAgentId,
+        heartbeat: targetHeartbeat,
+        reason: EXEC_EVENT_REASON,
+        deps: { runtime: state.runtime },
+      });
+
+      if (res.status === "skipped" && res.reason === "requests-in-flight") {
+        return res;
+      }
+
+      const agentState = state.agents.get(targetAgentId);
+      if (agentState && (res.status !== "skipped" || res.reason !== "disabled")) {
+        agentState.lastRunMs = now;
+        agentState.nextDueMs = now + agentState.intervalMs;
+      }
+
+      scheduleNext();
+      if (res.status === "ran") {
+        return { status: "ran", durationMs: Date.now() - startedAt };
+      }
+      return res;
+    }
 
     for (const agent of state.agents.values()) {
       if (isInterval && now < agent.nextDueMs) {
