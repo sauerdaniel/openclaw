@@ -92,4 +92,55 @@ describe("startHeartbeatRunner", () => {
 
     runner.stop();
   });
+
+  it("retries targeted exec-event wakes when the session is busy", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+
+    const runSpy = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "skipped", reason: "requests-in-flight" })
+      .mockResolvedValueOnce({ status: "ran", durationMs: 1 });
+
+    const runner = startHeartbeatRunner({
+      cfg: {
+        agents: {
+          defaults: { heartbeat: { every: "30m" } },
+          list: [{ id: "ops", heartbeat: { every: "30m" } }],
+        },
+      } as OpenClawConfig,
+      runOnce: runSpy,
+    });
+
+    requestHeartbeatNow({ reason: "exec-event:agent:ops:telegram:chat:123" });
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(runSpy.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        agentId: "ops",
+        reason: "exec-event",
+        heartbeat: expect.objectContaining({
+          session: "agent:ops:telegram:chat:123",
+          target: "last",
+        }),
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(runSpy).toHaveBeenCalledTimes(2);
+    expect(runSpy.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        agentId: "ops",
+        reason: "exec-event",
+        heartbeat: expect.objectContaining({
+          session: "agent:ops:telegram:chat:123",
+          target: "last",
+        }),
+      }),
+    );
+
+    runner.stop();
+  });
 });

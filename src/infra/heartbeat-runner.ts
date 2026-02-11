@@ -67,6 +67,7 @@ let heartbeatsEnabled = true;
 
 const EXEC_EVENT_REASON = "exec-event";
 const EXEC_EVENT_REASON_PREFIX = `${EXEC_EVENT_REASON}:`;
+const EXEC_EVENT_RETRY_DELAY_MS = 1000;
 
 function resolveTargetedExecSessionKey(reason?: string): string | null {
   if (!reason?.startsWith(EXEC_EVENT_REASON_PREFIX)) {
@@ -1044,6 +1045,9 @@ export function startHeartbeatRunner(opts: {
       });
 
       if (res.status === "skipped" && res.reason === "requests-in-flight") {
+        setTimeout(() => {
+          requestHeartbeatNow({ reason: `${EXEC_EVENT_REASON}:${targetedExecSessionKey}` });
+        }, EXEC_EVENT_RETRY_DELAY_MS);
         return res;
       }
 
