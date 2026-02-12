@@ -249,6 +249,7 @@ export const dispatchTelegramMessage = async ({
   const deliveryState = {
     delivered: false,
     skippedNonSilent: 0,
+    partialTextGenerated: false,
   };
 
   const { queuedFinal } = await dispatchReplyWithBufferedBlockDispatcher({
@@ -303,13 +304,24 @@ export const dispatchTelegramMessage = async ({
     replyOptions: {
       skillFilter,
       disableBlockStreaming,
-      onPartialReply: draftStream ? (payload) => updateDraftFromPartial(payload.text) : undefined,
+      onPartialReply: (payload) => {
+        if (payload.text && payload.text.length > 0) {
+          deliveryState.partialTextGenerated = true;
+        }
+        if (draftStream) {
+          updateDraftFromPartial(payload.text);
+        }
+      },
       onModelSelected,
     },
   });
   draftStream?.stop();
   let sentFallback = false;
-  if (!deliveryState.delivered && deliveryState.skippedNonSilent > 0) {
+  if (
+    !deliveryState.delivered &&
+    !deliveryState.partialTextGenerated &&
+    deliveryState.skippedNonSilent === 0
+  ) {
     const result = await deliverReplies({
       replies: [{ text: EMPTY_RESPONSE_FALLBACK }],
       chatId: String(chatId),
