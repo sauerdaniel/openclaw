@@ -125,15 +125,20 @@ export function createFollowupRunner(params: {
       let fallbackProvider = queued.run.provider;
       let fallbackModel = queued.run.model;
       try {
+        // Use heartbeat fallbacks if provided (takes precedence over agent config fallbacks)
+        const heartbeatFallbacks = opts?.heartbeatFallbacks;
+        const fallbacksOverride =
+          heartbeatFallbacks ??
+          resolveAgentModelFallbacksOverride(
+            queued.run.config,
+            resolveAgentIdFromSessionKey(queued.run.sessionKey),
+          );
         const fallbackResult = await runWithModelFallback({
           cfg: queued.run.config,
           provider: queued.run.provider,
           model: queued.run.model,
           agentDir: queued.run.agentDir,
-          fallbacksOverride: resolveAgentModelFallbacksOverride(
-            queued.run.config,
-            resolveAgentIdFromSessionKey(queued.run.sessionKey),
-          ),
+          fallbacksOverride,
           run: (provider, model) => {
             const authProfileId =
               provider === queued.run.provider ? queued.run.authProfileId : undefined;

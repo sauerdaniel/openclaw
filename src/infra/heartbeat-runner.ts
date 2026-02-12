@@ -157,13 +157,22 @@ export function resolveHeartbeatSummaryForAgent(
   const enabled = isHeartbeatEnabledForAgent(cfg, agentId);
 
   if (!enabled) {
+    const modelRaw = defaults?.model;
+    const model = (() => {
+      if (typeof modelRaw === "string") {
+        return modelRaw;
+      } else if (modelRaw && typeof modelRaw === "object" && "primary" in modelRaw) {
+        return modelRaw.primary;
+      }
+      return undefined;
+    })();
     return {
       enabled: false,
       every: "disabled",
       everyMs: null,
       prompt: resolveHeartbeatPromptText(defaults?.prompt),
       target: defaults?.target ?? DEFAULT_HEARTBEAT_TARGET,
-      model: defaults?.model,
+      model,
       ackMaxChars: Math.max(0, defaults?.ackMaxChars ?? DEFAULT_HEARTBEAT_ACK_MAX_CHARS),
     };
   }
@@ -176,7 +185,15 @@ export function resolveHeartbeatSummaryForAgent(
   );
   const target =
     merged?.target ?? defaults?.target ?? overrides?.target ?? DEFAULT_HEARTBEAT_TARGET;
-  const model = merged?.model ?? defaults?.model ?? overrides?.model;
+  const modelRaw = merged?.model ?? defaults?.model ?? overrides?.model;
+  const model = (() => {
+    if (typeof modelRaw === "string") {
+      return modelRaw;
+    } else if (modelRaw && typeof modelRaw === "object" && "primary" in modelRaw) {
+      return modelRaw.primary;
+    }
+    return undefined;
+  })();
   const ackMaxChars = Math.max(
     0,
     merged?.ackMaxChars ??
@@ -544,9 +561,31 @@ export async function runHeartbeatOnce(opts: {
   };
 
   try {
-    const heartbeatModelOverride = heartbeat?.model?.trim() || undefined;
-    const replyOpts = heartbeatModelOverride
-      ? { isHeartbeat: true, heartbeatModelOverride }
+    // Handle heartbeat model config: string or {primary, fallbacks}
+    let heartbeatModelOverride: string | undefined;
+    let heartbeatFallbacks: string[] | undefined;
+    const modelConfig = heartbeat?.model;
+    if (typeof modelConfig === "string") {
+      heartbeatModelOverride = modelConfig.trim() || undefined;
+    } else if (modelConfig && typeof modelConfig === "object" && "primary" in modelConfig) {
+      const primary = typeof modelConfig.primary === "string" ? modelConfig.primary.trim() : "";
+      if (primary) {
+        heartbeatModelOverride = primary;
+        if (Array.isArray(modelConfig.fallbacks) && modelConfig.fallbacks.length > 0) {
+          heartbeatFallbacks = modelConfig.fallbacks
+            .filter((f): f is string => typeof f === "string")
+            .map((f) => f.trim())
+            .filter((f) => f.length > 0);
+        }
+      }
+    }
+
+    const replyOpts: {
+      isHeartbeat: true;
+      heartbeatModelOverride?: string;
+      heartbeatFallbacks?: string[];
+    } = heartbeatModelOverride
+      ? { isHeartbeat: true, heartbeatModelOverride, heartbeatFallbacks }
       : { isHeartbeat: true };
     const replyResult = await getReplyFromConfig(ctx, replyOpts, cfg);
     const replyPayload = resolveHeartbeatReplyPayload(replyResult);

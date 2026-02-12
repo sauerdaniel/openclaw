@@ -96,15 +96,20 @@ export async function runMemoryFlushIfNeeded(params: {
     .filter(Boolean)
     .join("\n\n");
   try {
+    // Use heartbeat fallbacks if provided (takes precedence over agent config fallbacks)
+    const heartbeatFallbacks = params.opts?.heartbeatFallbacks;
+    const fallbacksOverride =
+      heartbeatFallbacks ??
+      resolveAgentModelFallbacksOverride(
+        params.followupRun.run.config,
+        resolveAgentIdFromSessionKey(params.followupRun.run.sessionKey),
+      );
     await runWithModelFallback({
       cfg: params.followupRun.run.config,
       provider: params.followupRun.run.provider,
       model: params.followupRun.run.model,
       agentDir: params.followupRun.run.agentDir,
-      fallbacksOverride: resolveAgentModelFallbacksOverride(
-        params.followupRun.run.config,
-        resolveAgentIdFromSessionKey(params.followupRun.run.sessionKey),
-      ),
+      fallbacksOverride,
       run: (provider, model) => {
         const authProfileId =
           provider === params.followupRun.run.provider
