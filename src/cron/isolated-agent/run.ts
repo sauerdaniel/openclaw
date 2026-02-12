@@ -194,20 +194,55 @@ export async function runCronIsolatedAgentTurn(params: {
   }
   const modelOverrideRaw =
     params.job.payload.kind === "agentTurn" ? params.job.payload.model : undefined;
-  const modelOverride = typeof modelOverrideRaw === "string" ? modelOverrideRaw.trim() : undefined;
-  if (modelOverride !== undefined && modelOverride.length > 0) {
-    const resolvedOverride = resolveAllowedModelRef({
-      cfg: cfgWithAgentDefaults,
-      catalog: await loadCatalog(),
-      raw: modelOverride,
-      defaultProvider: resolvedDefault.provider,
-      defaultModel: resolvedDefault.model,
-    });
-    if ("error" in resolvedOverride) {
-      return { status: "error", error: resolvedOverride.error };
+
+  // Handle both string and {primary, fallbacks} model config formats
+  let fallbacksOverride: string[] | undefined;
+  if (typeof modelOverrideRaw === "string") {
+    const modelOverride = modelOverrideRaw.trim();
+    if (modelOverride.length > 0) {
+      const resolvedOverride = resolveAllowedModelRef({
+        cfg: cfgWithAgentDefaults,
+        catalog: await loadCatalog(),
+        raw: modelOverride,
+        defaultProvider: resolvedDefault.provider,
+        defaultModel: resolvedDefault.model,
+      });
+      if ("error" in resolvedOverride) {
+        return { status: "error", error: resolvedOverride.error };
+      }
+      provider = resolvedOverride.ref.provider;
+      model = resolvedOverride.ref.model;
     }
-    provider = resolvedOverride.ref.provider;
-    model = resolvedOverride.ref.model;
+  } else if (
+    typeof modelOverrideRaw === "object" &&
+    modelOverrideRaw !== null &&
+    "primary" in modelOverrideRaw &&
+    typeof modelOverrideRaw.primary === "string"
+  ) {
+    // Object format: {primary, fallbacks}
+    const primary = modelOverrideRaw.primary.trim();
+    if (primary.length > 0) {
+      const resolvedOverride = resolveAllowedModelRef({
+        cfg: cfgWithAgentDefaults,
+        catalog: await loadCatalog(),
+        raw: primary,
+        defaultProvider: resolvedDefault.provider,
+        defaultModel: resolvedDefault.model,
+      });
+      if ("error" in resolvedOverride) {
+        return { status: "error", error: resolvedOverride.error };
+      }
+      provider = resolvedOverride.ref.provider;
+      model = resolvedOverride.ref.model;
+
+      // Extract fallbacks if present
+      if (Array.isArray(modelOverrideRaw.fallbacks) && modelOverrideRaw.fallbacks.length > 0) {
+        fallbacksOverride = modelOverrideRaw.fallbacks
+          .filter((f): f is string => typeof f === "string")
+          .map((f) => f.trim())
+          .filter((f) => f.length > 0);
+      }
+    }
   }
   const now = Date.now();
   const cronSession = resolveCronSession({
@@ -376,7 +411,9 @@ export async function runCronIsolatedAgentTurn(params: {
       provider,
       model,
       agentDir,
-      fallbacksOverride: resolveAgentModelFallbacksOverride(params.cfg, agentId),
+      // Cron payload fallbacks take precedence over agent config fallbacks
+      fallbacksOverride:
+        fallbacksOverride ?? resolveAgentModelFallbacksOverride(params.cfg, agentId),
       run: (providerOverride, modelOverride) => {
         if (isCliProvider(providerOverride, cfgWithAgentDefaults)) {
           const cliSessionId = getCliSessionId(cronSession.sessionEntry, providerOverride);

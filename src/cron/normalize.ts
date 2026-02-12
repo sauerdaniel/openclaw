@@ -100,6 +100,23 @@ function coercePayload(payload: UnknownRecord) {
       } else {
         delete next.model;
       }
+    } else if (isRecord(next.model)) {
+      const modelRecord = next.model;
+      const primary = typeof modelRecord.primary === "string" ? modelRecord.primary.trim() : "";
+      if (!primary) {
+        delete next.model;
+      } else {
+        next.model = { primary };
+        if (Array.isArray(modelRecord.fallbacks) && modelRecord.fallbacks.length > 0) {
+          const validFallbacks = modelRecord.fallbacks
+            .filter((f): f is string => typeof f === "string")
+            .map((f) => f.trim())
+            .filter((f) => f.length > 0);
+          if (validFallbacks.length > 0) {
+            (next.model as { primary: string; fallbacks: string[] }).fallbacks = validFallbacks;
+          }
+        }
+      }
     } else {
       delete next.model;
     }

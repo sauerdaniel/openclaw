@@ -292,4 +292,113 @@ describe("normalizeCronJobCreate", () => {
     expect(delivery.mode).toBeUndefined();
     expect(delivery.to).toBe("123");
   });
+
+  it("accepts string model (backward compatible)", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "string model",
+      enabled: true,
+      schedule: { kind: "cron", expr: "* * * * *" },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "agentTurn",
+        message: "hi",
+        model: " anthropic/claude-opus-4-6 ",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    const payload = normalized.payload as Record<string, unknown>;
+    expect(payload.model).toBe("anthropic/claude-opus-4-6");
+  });
+
+  it("accepts model as {primary, fallbacks} object", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "fallback model",
+      enabled: true,
+      schedule: { kind: "cron", expr: "* * * * *" },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "agentTurn",
+        message: "hi",
+        model: {
+          primary: " zai/glm-4.7-flash ",
+          fallbacks: [" zai/glm-4.7 ", " anthropic/claude-haiku-4-5-20251001 "],
+        },
+      },
+    }) as unknown as Record<string, unknown>;
+
+    const payload = normalized.payload as Record<string, unknown>;
+    expect(payload.model).toEqual({
+      primary: "zai/glm-4.7-flash",
+      fallbacks: ["zai/glm-4.7", "anthropic/claude-haiku-4-5-20251001"],
+    });
+  });
+
+  it("filters out empty/invalid fallback model strings", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "fallbacks filtered",
+      enabled: true,
+      schedule: { kind: "cron", expr: "* * * * *" },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "agentTurn",
+        message: "hi",
+        model: {
+          primary: "zai/glm-4.7-flash",
+          fallbacks: [" zai/glm-4.7 ", "", "  ", "anthropic/claude-haiku-4-5-20251001", null],
+        },
+      },
+    }) as unknown as Record<string, unknown>;
+
+    const payload = normalized.payload as Record<string, unknown>;
+    expect(payload.model).toEqual({
+      primary: "zai/glm-4.7-flash",
+      fallbacks: ["zai/glm-4.7", "anthropic/claude-haiku-4-5-20251001"],
+    });
+  });
+
+  it("removes model config with empty primary", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "empty primary",
+      enabled: true,
+      schedule: { kind: "cron", expr: "* * * * *" },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "agentTurn",
+        message: "hi",
+        model: {
+          primary: "   ",
+          fallbacks: ["zai/glm-4.7"],
+        },
+      },
+    }) as unknown as Record<string, unknown>;
+
+    const payload = normalized.payload as Record<string, unknown>;
+    expect("model" in payload).toBe(false);
+  });
+
+  it("accepts model object without fallbacks", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "no fallbacks",
+      enabled: true,
+      schedule: { kind: "cron", expr: "* * * * *" },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "agentTurn",
+        message: "hi",
+        model: {
+          primary: "zai/glm-4.7-flash",
+        },
+      },
+    }) as unknown as Record<string, unknown>;
+
+    const payload = normalized.payload as Record<string, unknown>;
+    expect(payload.model).toEqual({
+      primary: "zai/glm-4.7-flash",
+    });
+  });
 });

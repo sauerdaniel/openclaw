@@ -21,13 +21,19 @@ export type CronDelivery = {
 
 export type CronDeliveryPatch = Partial<CronDelivery>;
 
+/**
+ * Model configuration for cron jobs (matches agent model fallback pattern).
+ * Accepts a plain string for backward compatibility, or an object with primary/fallbacks.
+ */
+export type CronModelConfig = string | { primary: string; fallbacks?: string[] };
+
 export type CronPayload =
   | { kind: "systemEvent"; text: string }
   | {
       kind: "agentTurn";
       message: string;
-      /** Optional model override (provider/model or alias). */
-      model?: string;
+      /** Optional model override (provider/model or {primary, fallbacks}). */
+      model?: CronModelConfig;
       thinking?: string;
       timeoutSeconds?: number;
       allowUnsafeExternalContent?: boolean;
@@ -42,7 +48,7 @@ export type CronPayloadPatch =
   | {
       kind: "agentTurn";
       message?: string;
-      model?: string;
+      model?: CronModelConfig;
       thinking?: string;
       timeoutSeconds?: number;
       allowUnsafeExternalContent?: boolean;
