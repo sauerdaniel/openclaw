@@ -6,7 +6,7 @@ import * as bootstrapCache from "../../agents/bootstrap-cache.js";
 import { buildModelAliasIndex } from "../../agents/model-selection.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
-import { loadSessionStore, saveSessionStore } from "../../config/sessions.js";
+import { loadSessionStore } from "../../config/sessions.js";
 import { formatZonedTimestamp } from "../../infra/format-time/format-datetime.ts";
 import {
   __testing as sessionBindingTesting,
@@ -1455,6 +1455,54 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
         RawBody: "/new",
         CommandBody: "/new",
         From: "user-model-override",
+        To: "bot",
+        ChatType: "direct",
+        SessionKey: sessionKey,
+        Provider: "telegram",
+        Surface: "telegram",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.isNewSession).toBe(true);
+    expect(result.resetTriggered).toBe(true);
+    expect(result.sessionEntry.verboseLevel).toBe("on");
+    expect(result.sessionEntry.thinkingLevel).toBe("high");
+    expect(result.sessionEntry.providerOverride).toBeUndefined();
+    expect(result.sessionEntry.modelOverride).toBeUndefined();
+
+    const persisted = loadSessionStore(storePath)[sessionKey];
+    expect(persisted?.providerOverride).toBeUndefined();
+    expect(persisted?.modelOverride).toBeUndefined();
+  });
+
+  it("/reset clears per-session model/provider overrides while preserving behavior overrides", async () => {
+    const storePath = await createStorePath("openclaw-reset-clear-model-override-reset-");
+    const sessionKey = "agent:main:telegram:dm:user-model-override-reset";
+    const existingSessionId = "existing-session-model-override-reset";
+    await seedSessionStoreWithOverrides({
+      storePath,
+      sessionKey,
+      sessionId: existingSessionId,
+      overrides: {
+        verboseLevel: "on",
+        thinkingLevel: "high",
+        providerOverride: "anthropic",
+        modelOverride: "claude-opus-4-6",
+      },
+    });
+
+    const cfg = {
+      session: { store: storePath, idleMinutes: 999 },
+    } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "/reset",
+        RawBody: "/reset",
+        CommandBody: "/reset",
+        From: "user-model-override-reset",
         To: "bot",
         ChatType: "direct",
         SessionKey: sessionKey,
