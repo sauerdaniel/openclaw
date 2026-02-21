@@ -107,72 +107,6 @@ function createOverrideFailureRun(params: {
   });
 }
 
-function makeSingleProviderStore(params: {
-  provider: string;
-  usageStat: NonNullable<AuthProfileStore["usageStats"]>[string];
-}): AuthProfileStore {
-  const profileId = `${params.provider}:default`;
-  return {
-    version: AUTH_STORE_VERSION,
-    profiles: {
-      [profileId]: {
-        type: "api_key",
-        provider: params.provider,
-        key: "test-key",
-      },
-    },
-    usageStats: {
-      [profileId]: params.usageStat,
-    },
-  };
-}
-
-function createFallbackOnlyRun() {
-  return vi.fn().mockImplementation(async (providerId, modelId) => {
-    if (providerId === "fallback") {
-      return "ok";
-    }
-    throw new Error(`unexpected provider: ${providerId}/${modelId}`);
-  });
-}
-
-async function expectSkippedUnavailableProvider(params: {
-  providerPrefix: string;
-  usageStat: NonNullable<AuthProfileStore["usageStats"]>[string];
-  expectedReason: string;
-}) {
-  const provider = `${params.providerPrefix}-${crypto.randomUUID()}`;
-  const cfg = makeProviderFallbackCfg(provider);
-  const primaryStore = makeSingleProviderStore({
-    provider,
-    usageStat: params.usageStat,
-  });
-  // Include fallback provider profile so the fallback is attempted (not skipped as no-profile).
-  const store: AuthProfileStore = {
-    ...primaryStore,
-    profiles: {
-      ...primaryStore.profiles,
-      "fallback:default": {
-        type: "api_key",
-        provider: "fallback",
-        key: "test-key",
-      },
-    },
-  };
-  const run = createFallbackOnlyRun();
-
-  const result = await runWithStoredAuth({
-    cfg,
-    store,
-    provider,
-    run,
-  });
-
-  expect(result.result).toBe("ok");
-  expect(run.mock.calls).toEqual([["fallback", "ok-model"]]);
-  expect(result.attempts[0]?.reason).toBe(params.expectedReason);
-}
-
 describe("runWithModelFallback", () => {
   it("keeps openai gpt-5.3 codex on the openai provider before running", async () => {
     const cfg = makeCfg();
@@ -455,32 +389,96 @@ describe("runWithModelFallback", () => {
     expect(run.mock.calls[1]?.[1]).toBe("claude-haiku-3-5");
   });
 
-  it("skips providers when all profiles are in cooldown", async () => {
-    await expectSkippedUnavailableProvider({
-      providerPrefix: "cooldown-test",
-      usageStat: {
-        cooldownUntil: Date.now() + 5 * 60_000,
+  it("promotes to highest-priority fallback when currently on a lower fallback", async () => {
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai/gpt-4.1-mini",
+            fallbacks: ["anthropic/claude-haiku-3-5", "google/gemini-2.0-flash"],
+          },
+        },
       },
-      expectedReason: "rate_limit",
     });
+
+    const run = vi.fn().mockImplementation(async (providerId, modelId) => {
+      if (providerId === "openai") {
+        throw Object.assign(new Error("rate limited"), { status: 429 });
+      }
+      if (providerId === "anthropic") {
+        return "promoted";
+      }
+      throw new Error(`unexpected provider: ${providerId}/${modelId}`);
+    });
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "google",
+      model: "gemini-2.0-flash",
+      run,
+    });
+
+    expect(result.result).toBe("promoted");
+    expect(run.mock.calls).toEqual([
+      ["openai", "gpt-4.1-mini"],
+      ["anthropic", "claude-haiku-3-5"],
+    ]);
   });
 
-  it("does not skip OpenRouter when legacy cooldown markers exist", async () => {
-    const provider = "openrouter";
-    const cfg = makeProviderFallbackCfg(provider);
-    const store = makeSingleProviderStore({
-      provider,
-      usageStat: {
-        cooldownUntil: Date.now() + 5 * 60_000,
-        disabledUntil: Date.now() + 10 * 60_000,
-        disabledReason: "billing",
+  it("keeps current model first when fallbacksOverride is explicit", async () => {
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai/gpt-4.1-mini",
+            fallbacks: ["anthropic/claude-haiku-3-5", "google/gemini-2.0-flash"],
+          },
+        },
       },
     });
-    const run = vi.fn().mockImplementation(async (providerId) => {
-      if (providerId === "openrouter") {
+    const run = vi.fn().mockResolvedValue("current-ok");
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "google",
+      model: "gemini-2.0-flash",
+      fallbacksOverride: ["anthropic/claude-haiku-3-5", "google/gemini-2.0-flash"],
+      run,
+    });
+
+    expect(result.result).toBe("current-ok");
+    expect(run.mock.calls).toEqual([["google", "gemini-2.0-flash"]]);
+  });
+
+  it("probes cooldowned primary periodically, then falls back on rate-limit", async () => {
+    const provider = `cooldown-test-${crypto.randomUUID()}`;
+    const profileId = `${provider}:default`;
+
+    const store: AuthProfileStore = {
+      version: AUTH_STORE_VERSION,
+      profiles: {
+        [profileId]: {
+          type: "api_key",
+          provider,
+          key: "test-key",
+        },
+      },
+      usageStats: {
+        [profileId]: {
+          cooldownUntil: Date.now() + 5 * 60_000,
+        },
+      },
+    };
+
+    const cfg = makeProviderFallbackCfg(provider);
+    const run = vi.fn().mockImplementation(async (providerId, modelId) => {
+      if (providerId === provider) {
+        throw Object.assign(new Error("rate limited"), { status: 429 });
+      }
+      if (providerId === "fallback") {
         return "ok";
       }
-      throw new Error(`unexpected provider: ${providerId}`);
+      throw new Error(`unexpected provider: ${providerId}/${modelId}`);
     });
 
     const result = await runWithStoredAuth({
@@ -491,22 +489,11 @@ describe("runWithModelFallback", () => {
     });
 
     expect(result.result).toBe("ok");
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(run.mock.calls[0]?.[0]).toBe("openrouter");
-    expect(result.attempts).toEqual([]);
-  });
-
-  it("propagates disabled reason when all profiles are unavailable", async () => {
-    const now = Date.now();
-    await expectSkippedUnavailableProvider({
-      providerPrefix: "disabled-test",
-      usageStat: {
-        disabledUntil: now + 5 * 60_000,
-        disabledReason: "billing",
-        failureCounts: { rate_limit: 4 },
-      },
-      expectedReason: "billing",
-    });
+    expect(run.mock.calls).toEqual([
+      [provider, "m1"],
+      ["fallback", "ok-model"],
+    ]);
+    expect(result.attempts[0]?.reason).toBe("rate_limit");
   });
 
   it("does not skip when any profile is available", async () => {
